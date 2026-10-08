@@ -1,0 +1,88 @@
+--- a/src/dx12/pipeline_desc.rs
++++ b/src/dx12/pipeline_desc.rs
+@@ -96,7 +96,7 @@
+ /// Implementaation of a pipeline state stream, which is a sequence of subobjects put into
+ /// a byte array according to some basic alignment rules.
+ ///
+-/// Each subobject must start on an 8 byte boundary. Each subobject contains a 32 bit
++/// Each subobject must start on a pointer-aligned boundary (4 bytes on x86, 8 on x64/ARM64). Each subobject contains a 32 bit
+ /// type identifier, followed by the actual subobject data, aligned as required by the
+ /// subobject's structure.
+ ///
+@@ -131,8 +131,8 @@
+ 
+     /// Adds a subobject to the pipeline state stream.
+     fn add_object<T: RenderPipelineStreamObject>(&mut self, object: T) {
+-        // Ensure 8-byte alignment for the subobject start.
+-        self.align_to(8);
++        // D3D12 requires natural word alignment, not a fixed 64-bit boundary.
++        self.align_to(align_of::<*const c_void>());
+ 
+         // Append the type tag (u32)
+         let tag: u32 = T::SUBOBJECT_TYPE.0 as u32;
+@@ -341,4 +341,64 @@
+         // Data tucked in, aligned to the natural alignment of u64
+         assert_eq!(&stream.bytes[24..32], &168u64.to_ne_bytes());
+     }
+-}
++
++    // Mirrors the C++ SDK helper's alignas(void*) subobject representation.
++    #[repr(C)]
++    struct Tagged<T> {
++        tag: D3D12_PIPELINE_STATE_SUBOBJECT_TYPE,
++        value: T,
++    }
++
++    #[repr(C)]
++    union NativeSubobject<T> {
++        tagged: ManuallyDrop<Tagged<T>>,
++        pointer_alignment: *const c_void,
++    }
++
++    #[test]
++    fn blend_followed_by_sample_mask_uses_native_pointer_alignment() {
++        let mut stream = RenderPipelineStateStream::new();
++        stream.add_object(RootSignature(None));
++        stream.add_object(D3D12_BLEND_DESC::default());
++        stream.add_object(SampleMask(0x1234_5678));
++
++        let offset = size_of::<NativeSubobject<RootSignature>>()
++            + size_of::<NativeSubobject<D3D12_BLEND_DESC>>();
++        #[cfg(target_pointer_width = "32")]
++        assert_eq!(offset, 340);
++        #[cfg(target_pointer_width = "64")]
++        assert_eq!(offset, 352);
++        assert_eq!(
++            &stream.bytes[offset..offset + 4],
++            &(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_SAMPLE_MASK.0 as u32).to_ne_bytes(),
++        );
++        assert_eq!(
++            &stream.bytes[offset + 4..offset + 8],
++            &0x1234_5678u32.to_ne_bytes()
++        );
++        assert_eq!(stream.bytes.len(), offset + 8);
++    }
++
++    #[test]
++    fn shader_subobjects_follow_native_descriptor_boundaries() {
++        let mut stream = RenderPipelineStateStream::new();
++        stream.add_object(RootSignature(None));
++        stream.add_object(VertexShader(D3D12_SHADER_BYTECODE::default()));
++        stream.add_object(PixelShader(D3D12_SHADER_BYTECODE::default()));
++
++        let offset = size_of::<NativeSubobject<RootSignature>>()
++            + size_of::<NativeSubobject<VertexShader>>();
++        #[cfg(target_pointer_width = "32")]
++        assert_eq!(offset, 20);
++        #[cfg(target_pointer_width = "64")]
++        assert_eq!(offset, 40);
++        assert_eq!(
++            &stream.bytes[offset..offset + 4],
++            &(D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_PS.0 as u32).to_ne_bytes(),
++        );
++        assert_eq!(
++            stream.bytes.len(),
++            offset + size_of::<NativeSubobject<PixelShader>>()
++        );
++    }
++}

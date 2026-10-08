@@ -60,9 +60,12 @@ jobs:
           python3 scripts/test-release-verifier.py
       - run: cargo fmt --all -- --check
       - run: cargo test --locked --all-targets --target ${{ matrix.target }}
+      - name: Test DX12 pipeline stream ABI
+        if: runner.os == 'Windows'
+        run: cargo test --locked -p wgpu-hal --lib --no-default-features --features dx12 --target ${{ matrix.target }} dx12::pipeline_desc::tests
       - name: Test one-time legacy export helper
         run: node --test tests/legacy-export.test.cjs
-      - run: cargo clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+      - run: cargo clippy --locked -p nebulabook --no-deps --all-targets --target ${{ matrix.target }} -- -D warnings
       - run: cargo build --locked --release --target ${{ matrix.target }}
       - name: Smoke-test native Linux X11 and Wayland
         if: runner.os == 'Linux'
@@ -124,7 +127,9 @@ jobs:
         shell: pwsh
         run: |
           $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
-          $version = $metadata.packages[0].version
+          $application = @($metadata.packages | Where-Object { $_.name -eq 'nebulabook' })
+          if ($application.Count -ne 1) { throw 'Expected exactly one Nebulabook package' }
+          $version = $application[0].version
           if ($version -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') { throw 'Invalid package version' }
           New-Item -ItemType Directory -Force release-assets | Out-Null
           $arch = '${{ matrix.arch }}'

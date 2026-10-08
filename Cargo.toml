@@ -2,10 +2,15 @@
 name = "nebulabook"
 version = "4.1.0"
 edition = "2021"
-rust-version = "1.89"
+rust-version = "1.95"
 description = "轻量离线 Rust 原生记事本"
 license = "MIT"
 repository = "https://github.com/Tran314/Nebulabook"
+
+[workspace]
+members = ["vendor/wgpu-hal-30.0.1"]
+default-members = ["."]
+resolver = "2"
 
 [features]
 default = ["desktop"]
@@ -22,14 +27,14 @@ uuid = { version = "1", features = ["v4", "serde"] }
 rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "async-std"] }
 
 # Windows uses native Direct3D 12, including the OS-provided WARP fallback.
-# eframe 0.31 does not enable wgpu's DX12 feature itself.
+# Keep eframe and its direct wgpu backend feature dependency on the same major.
 [target.'cfg(windows)'.dependencies]
-eframe = { version = "0.31.1", optional = true, default-features = false, features = ["default_fonts", "wgpu"] }
-wgpu = { version = "24", optional = true, default-features = false, features = ["dx12"] }
+eframe = { version = "0.36.2", optional = true, default-features = false, features = ["default_fonts", "wgpu_no_default_features"] }
+wgpu = { version = "30.0.1", optional = true, default-features = false, features = ["dx12"] }
 
 # Keep the existing smaller OpenGL backend on other native platforms.
 [target.'cfg(not(windows))'.dependencies]
-eframe = { version = "0.31.1", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+eframe = { version = "0.36.2", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 
 [dev-dependencies]
 tempfile = "3"
@@ -44,3 +49,7 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Temporary upstream x86 DX12 pipeline ABI correction; see vendor/PATCHES.md.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal-30.0.1" }
