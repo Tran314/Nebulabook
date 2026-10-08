@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Nebulabook
+Name[zh_CN]=Nebulabook 轻量记事本
+Comment=Lightweight offline native notes
+Comment[zh_CN]=轻量、离线的原生记事本
+Exec=nebulabook
+Icon=accessories-text-editor
+Terminal=false
+Categories=Utility;TextEditor;
+Keywords=notes;notepad;offline;
+StartupNotify=true

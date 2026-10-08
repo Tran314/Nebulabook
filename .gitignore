@@ -1,0 +1,18 @@
+/target/
+# Per-user notebook data and temporary migration exports are never source files.
+*.tmp
+*.bak
+*.lockfile
+nebula-notes.json
+nebulabook.json
+nebula-legacy-export-*.json
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+/release-assets/
+/smoke-output/
+
+__pycache__/
+*.pyc

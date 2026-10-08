@@ -1,0 +1,46 @@
+[package]
+name = "nebulabook"
+version = "4.1.0"
+edition = "2021"
+rust-version = "1.89"
+description = "轻量离线 Rust 原生记事本"
+license = "MIT"
+repository = "https://github.com/Tran314/Nebulabook"
+
+[features]
+default = ["desktop"]
+desktop = ["dep:eframe", "dep:rfd", "dep:wgpu"]
+
+[dependencies]
+chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
+directories = "6"
+fs2 = "0.4"
+html2text = "0.14"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "async-std"] }
+
+# Windows uses native Direct3D 12, including the OS-provided WARP fallback.
+# eframe 0.31 does not enable wgpu's DX12 feature itself.
+[target.'cfg(windows)'.dependencies]
+eframe = { version = "0.31.1", optional = true, default-features = false, features = ["default_fonts", "wgpu"] }
+wgpu = { version = "24", optional = true, default-features = false, features = ["dx12"] }
+
+# Keep the existing smaller OpenGL backend on other native platforms.
+[target.'cfg(not(windows))'.dependencies]
+eframe = { version = "0.31.1", optional = true, default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "nebulabook"
+path = "src/main.rs"
+required-features = ["desktop"]
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+strip = true

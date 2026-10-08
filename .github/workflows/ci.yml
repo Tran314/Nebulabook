@@ -1,0 +1,178 @@
+name: Native Rust CI
+run-name: "Native Rust CI · ${{ github.ref_name }} · ${{ github.sha }} · publish=${{ inputs.publish_release || contains(github.event.head_commit.message, '[release v4.1.0]') }}"
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish_release:
+        description: 'Publish the verified v4.1.0 Linux and Windows release'
+        type: boolean
+        default: false
+permissions:
+  contents: read
+jobs:
+  check:
+    name: check (${{ matrix.arch }})
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            arch: linux-x64
+            pe_machine: ''
+          - os: ubuntu-22.04-arm
+            target: aarch64-unknown-linux-gnu
+            arch: linux-arm64
+            pe_machine: ''
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            arch: x64
+            pe_machine: '8664'
+          - os: windows-2025
+            target: i686-pc-windows-msvc
+            arch: x86
+            pe_machine: '014c'
+          - os: windows-11-arm
+            target: aarch64-pc-windows-msvc
+            arch: arm64
+            pe_machine: 'aa64'
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Install stable Rust components
+        run: |
+          rustup component add rustfmt clippy
+          rustup target add ${{ matrix.target }}
+          rustc -Vv
+      - name: Linux native build prerequisites
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libegl-mesa0 fonts-noto-cjk xvfb xauth xdotool openbox weston dbus-x11 imagemagick
+      - name: Test Linux packaging and user installation
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/test-linux-packaging.py
+          python3 scripts/test-release-verifier.py
+      - run: cargo fmt --all -- --check
+      - run: cargo test --locked --all-targets --target ${{ matrix.target }}
+      - name: Test one-time legacy export helper
+        run: node --test tests/legacy-export.test.cjs
+      - run: cargo clippy --locked --all-targets --target ${{ matrix.target }} -- -D warnings
+      - run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Smoke-test native Linux X11 and Wayland
+        if: runner.os == 'Linux'
+        run: bash scripts/smoke-linux.sh target/${{ matrix.target }}/release/nebulabook
+      - name: Package verified Linux archive
+        if: runner.os == 'Linux'
+        run: bash scripts/package-linux.sh --target ${{ matrix.target }} --smoke-output smoke-output
+      - name: Upload Linux application
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nebulabook-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+      - name: Upload Linux display verification
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: display-checks-${{ matrix.arch }}
+          path: smoke-output/*
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Smoke-test native Windows startup
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          NEBULABOOK_NO_ERROR_DIALOG: '1'
+          NEBULABOOK_STARTUP_LOG: ${{ runner.temp }}/nebulabook-startup.log
+          RUST_BACKTRACE: '1'
+        run: |
+          $stderr = "$env:RUNNER_TEMP/nebulabook-stderr.log"
+          $stdout = "$env:RUNNER_TEMP/nebulabook-stdout.log"
+          $app = Start-Process -FilePath (Resolve-Path target/${{ matrix.target }}/release/nebulabook.exe) -PassThru -RedirectStandardError $stderr -RedirectStandardOutput $stdout
+          try {
+            $deadline = [DateTime]::UtcNow.AddSeconds(15)
+            $ready = $false
+            do {
+              Start-Sleep -Milliseconds 250
+              $app.Refresh()
+              if (Test-Path $stderr) {
+                $ready = [bool](Select-String -Path $stderr -Pattern 'Nebulabook renderer initialized:' -Quiet -ErrorAction SilentlyContinue)
+              }
+            } until ($app.HasExited -or $ready -or [DateTime]::UtcNow -ge $deadline)
+            if ($ready -and -not $app.HasExited) { Start-Sleep -Seconds 1; $app.Refresh() }
+            if ($app.HasExited -or -not $ready) {
+              foreach ($log in @($env:NEBULABOOK_STARTUP_LOG, $stderr, $stdout)) {
+                if (Test-Path $log) { Write-Host "--- $log ---"; Get-Content $log }
+              }
+              Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion | Format-List
+              throw "Native renderer did not initialize successfully (exited=$($app.HasExited), code=$($app.ExitCode))"
+            }
+            Get-Content $stderr
+          } finally {
+            if (-not $app.HasExited) { Stop-Process -Id $app.Id }
+          }
+      - name: Package verified Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $metadata = cargo metadata --locked --no-deps --format-version 1 | ConvertFrom-Json
+          $version = $metadata.packages[0].version
+          if ($version -notmatch '^\d+\.\d+\.\d+([+-][0-9A-Za-z.-]+)?$') { throw 'Invalid package version' }
+          New-Item -ItemType Directory -Force release-assets | Out-Null
+          $arch = '${{ matrix.arch }}'
+          $name = "nebulabook-v$version-windows-$arch.exe"
+          Copy-Item target/${{ matrix.target }}/release/nebulabook.exe "release-assets/$name"
+          $bytes = [System.IO.File]::ReadAllBytes("release-assets/$name")
+          if ($bytes.Length -lt 128 -or $bytes[0] -ne 0x4D -or $bytes[1] -ne 0x5A) { throw 'Not a Windows executable' }
+          $peOffset = [BitConverter]::ToInt32($bytes, 0x3c)
+          if ($peOffset -lt 0 -or $peOffset + 26 -gt $bytes.Length -or [BitConverter]::ToUInt32($bytes, $peOffset) -ne 0x4550) { throw 'Invalid PE header' }
+          $machine = [BitConverter]::ToUInt16($bytes, $peOffset + 4)
+          if ($machine -ne [Convert]::ToUInt16('${{ matrix.pe_machine }}', 16)) { throw 'Wrong executable architecture' }
+          $hash = (Get-FileHash "release-assets/$name" -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $name" | Set-Content "release-assets/SHA256SUMS-windows-$arch.txt" -Encoding ascii
+          @{ commit = $env:GITHUB_SHA; version = $version; arch = $arch; target = '${{ matrix.target }}'; host_arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString(); pe_machine = ('{0:x4}' -f $machine); rust = (rustc --version); bytes = $bytes.Length; sha256 = $hash } | ConvertTo-Json | Set-Content "release-assets/build-info-windows-$arch.json" -Encoding utf8
+      - name: Upload Windows application
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nebulabook-windows-${{ matrix.arch }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    needs: check
+    timeout-minutes: 10
+    # This initial release is explicitly bounded; ordinary future pushes only test.
+    if: >-
+      github.repository == 'Tran314/Nebulabook' && github.ref == 'refs/heads/main' &&
+      ((github.event_name == 'push' && contains(github.event.head_commit.message, '[release v4.1.0]')) ||
+       (github.event_name == 'workflow_dispatch' && inputs.publish_release))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: nebulabook-release-v4.1.0
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: nebulabook-*
+          merge-multiple: true
+          path: release-assets
+      - name: Verify provenance and publish once
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+        run: bash scripts/publish-release.sh
