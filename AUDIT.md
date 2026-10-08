@@ -71,7 +71,7 @@ Windows：原生 renderer 初始化/存活；x64/x86/ARM64 的 PE machine、目�
 
 ## 依赖记录
 
-依赖锁定沿用已审查的原生 4.0.0，仅应用版本变为 4.1.0；本次未新增 crate。此前同日 RustSec 数据库扫描结果为 0 个已知漏洞，2 个维护状态警告：`paste 1.0.15`（当前功能无可达使用）与 `ttf-parser 0.25.1`（字体依赖链）。参见 [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html)、[RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192.html)。应持续跟踪 GUI/字体依赖升级；此历史扫描不保证未来无漏洞，也不是渗透测试或形式化证明。
+原生 v4.1.0 基线的依赖锁定沿用已审查的原生 4.0.0，当时仅应用版本变为 4.1.0，未新增 crate。后续依赖升级另见下节。此前同日 RustSec 数据库扫描结果为 0 个已知漏洞，2 个维护状态警告：`paste 1.0.15`（当前功能无可达使用）与 `ttf-parser 0.25.1`（字体依赖链）。参见 [RUSTSEC-2024-0436](https://rustsec.org/advisories/RUSTSEC-2024-0436.html)、[RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192.html)。应持续跟踪 GUI/字体依赖升级；此历史扫描不保证未来无漏洞，也不是渗透测试或形式化证明。
 
 ## Nebulabook 更名回归
 
@@ -82,3 +82,30 @@ Windows：原生 renderer 初始化/存活；x64/x86/ARM64 的 PE machine、目�
 首次 ARM64 窗口启动发现 runner 缺少 `libxkbcommon-x11.so.0`，已补入 CI 运行库；README 的用户安装依赖已有该包。随后 [7f6f247 的真实 CI](https://github.com/Tran314/Nebulabook/actions/runs/37811469265) 在 Linux x64/ARM64 均成功初始化 Glow 和中文字形，但严格键盘保存验收发现标题 Tab 导航又被正文当成字符，导致正文多出前导制表符。没有放宽保存断言或发布失败产物。
 
 已用实际 egui RawInput 在分阶段、整批和逐字符时序复现并修正：只消费从标题进入正文的第一枚导航 Tab，正文已有焦点时的 Tab/ShiftTab 缩进和点击后 Tab 仍保留。4项新增回归全部通过，原输入排序与关闭排队机制不变。后续真实 CI 继续检查完整编辑/保存/关闭/重开以及 Wayland。烟测失败时保留本次隔离测试数据和截图，不读取用户笔记。
+
+## eframe / wgpu 联动升级验证
+
+本次依赖 PR 以 `9e56b7869cc28db6f9c34108ff138cef18434159` 为源码基线，联动使用 eframe/egui 0.36.2 和 wgpu 30.0.1；保留 Linux Glow/X11/Wayland、Windows DX12/FXC 和默认硬件优先/WARP 后备策略。构建 MSRV 提高至 Rust 1.95，来源为 [egui 0.36.2 的工作区配置](https://github.com/emilk/egui/blob/0.36.2/Cargo.toml)。Windows 的直接 wgpu 与 eframe 重导出类型设编译期回归检查，锁文件使 gpu-allocator 0.28 和 wgpu-hal 30.0.1 统一使用 windows 0.62.2。Dependabot 将 eframe/wgpu 归入同一更新组。
+
+API 迁移涵盖 App::logic/ui、Panel、可变字体访问、菜单关闭及无窗口测试纹理回收。输入排序保留原文本/IME/保存/关闭断言；正文新获焦点后先完成一轮无新输入的 egui pass，再按原顺序交付待处理事件，避免首个 Tab 被当成焦点导航。隐藏窗口的原始事件交由 eframe 完整保留；隐藏关闭先取消并恢复窗口，等真实 UI 处理完排队输入后再保存/确认关闭。存储格式、持久化身份和保存失败保护保持不变。
+
+Windows 图形验证与兼容边界：WGPU 30 的 DX12 适配器要求资源绑定 Tier 2，较旧 GPU 可能回退到 WARP，软件渲染可能降低性能。微软文档明确 Windows 10 1709 起的 WARP 支持 Feature Level 12_0 / 12_1，对应至少 Tier 2；更早 Windows 10 与旧 GPU 组合尚未验证。来源：[WGPU 适配器源码](https://github.com/gfx-rs/wgpu/blob/v30.0.1/wgpu-hal/src/dx12/adapter.rs)、[WARP](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/directx-warp)、[Feature Level](https://learn.microsoft.com/en-us/windows/win32/direct3d12/hardware-feature-levels)。CI 的 Windows 2025 / Windows 11 ARM64 结果不代表全部旧系统或实体 GPU；Linux 的 glibc 2.35、真实 X11/Wayland、二进制 SHA256 绑定和全部发布门禁继续保留。
+
+本地验证环境：助手 Debian 13 / x86_64、Rust 1.95.0，未访问用户电脑或真实笔记。
+
+- 全部 80 项 Rust 测试通过：66 库单元、7 启动/平台配置、5 Linux 存储、2 工作流集成；另有 41 项无 desktop 测试通过。
+- 新增隐藏窗口回归覆盖最小化/遮挡时关闭、自动保存期限前关闭、保存失败/外部修改冲突、排队输入在多次隐藏 tick 中保持顺序、恢复后最终关闭及明确放弃。保留全部原有文字/IME/点击/Tab/关闭断言。
+- Linux x64 本机与 Linux ARM64、Windows x64/x86/ARM64 交叉全目标 Clippy（warnings denied）、rustfmt、必需系统 CJK 字形检查通过；交叉检查不代表目标二进制运行。
+- Linux x64 release 编译通过。本机开发二进制直接符号需要 GLIBC 2.39，不能作为正式 glibc 2.35 发行包；Ubuntu 22.04 CI 的原生编译、ABI 和打包门禁继续强制执行。
+- 4 项 Node 导出测试、16 项 Linux 打包/安装回归、15 项离线发行校验用例以及 Python/Shell/YAML 语法检查通过；合成平台头/GUI 证据仅验证脚本行为。
+- 本环境没有 Xvfb/Weston，未运行本次升级的真实窗口烟测；尚未在本地运行 Windows EXE 或 Linux ARM64 程序。真实 X11/Wayland、Windows 三架构启动和正式产物证据必须以此次提交的完整 CI 为准。
+
+原版本的依赖扫描和 GUI 记录不能替代此次升级的验证；此次未重新执行 RustSec 数据库扫描。
+
+### Windows x86 上游 DX12 ABI 临时补丁
+
+真实 x86 启动在创建 `egui_pipeline` 时返回 `0x80070057`，而同源码的 Windows x64/ARM64 和 Linux 两架构已通过。已定位 wgpu-hal 30.0.1 把流式管线子对象固定按 8 字节对齐；D3D12 ABI 在 x86 要求 4 字节指针对齐。使用官方 crate 的本地副本，仅将此处改为指针对齐并加入实际序列化回归，保留原许可证、来源校验和及精确变更说明：[vendor/PATCHES.md](vendor/PATCHES.md)。该补丁尚非上游正式修复，需要随依赖更新审阅；只有原生 x86 启动成功才可确认修复有效，不以交叉编译代替。
+
+为在三种 Windows 架构执行上游模块的私有回归测试，vendored crate 被纳入工作区，默认成员仍只有应用；应用与回归共用根 Cargo.lock，vendor 内原发布锁文件只作来源记录。未增加 RustSec 忽略规则。对更新后的锁文件使用本地 1295 条 RustSec 公告快照作离线检查，未发现已知漏洞，有 `ttf-parser 0.25.1` 未维护警告；该快照未在本次刷新，不能视为最新漏洞数据库扫描或对本地源码补丁的安全认证。
+
+应用 Clippy 明确选择 `-p nebulabook --no-deps --all-targets -- -D warnings`，保持原先对全部应用目标的严格检查范围；不因上游依赖成为工作区成员而扩展成上游第三方源码风格门禁。vendored crate 仍经过编译、三个 Windows 架构的原生 ABI 回归、真实启动及独立源码审查，未放宽运行时或发布检查。

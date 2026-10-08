@@ -67,7 +67,7 @@ fn native_options() -> eframe::NativeOptions {
 #[cfg(windows)]
 fn windows_wgpu_options() -> eframe::egui_wgpu::WgpuConfiguration {
     use eframe::{egui_wgpu, wgpu};
-    let mut setup = egui_wgpu::WgpuSetupCreateNew::default();
+    let mut setup = egui_wgpu::WgpuSetupCreateNew::without_display_handle();
     // Use Windows 10+'s native graphics stack, rather than relying on a GPU
     // vendor's OpenGL driver. Default adapter selection tries hardware before
     // CPU adapters, including the OS-provided Microsoft WARP renderer.
@@ -181,6 +181,10 @@ mod tests {
             panic!("Expected native adapter discovery");
         };
         assert_eq!(setup.instance_descriptor.backends, wgpu::Backends::DX12);
+        // The direct dependency supplies DX12 features to eframe's exact wgpu major.
+        // A split upgrade must fail at compile time rather than lose its backend.
+        let direct_backend: ::wgpu::Backends = setup.instance_descriptor.backends;
+        assert_eq!(direct_backend, ::wgpu::Backends::DX12);
         assert_eq!(
             setup.power_preference,
             wgpu::PowerPreference::HighPerformance

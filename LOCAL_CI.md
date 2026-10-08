@@ -6,7 +6,7 @@
 cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo test --locked --no-default-features
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked -p nebulabook --no-deps --all-targets -- -D warnings
 cargo build --locked --release
 node --test tests/legacy-export.test.cjs
 ```

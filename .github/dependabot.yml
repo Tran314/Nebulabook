@@ -2,6 +2,11 @@ version: 2
 updates:
   - package-ecosystem: cargo
     directory: /
+    groups:
+      native-renderer:
+        patterns:
+          - "eframe"
+          - "wgpu"
     schedule:
       interval: weekly
   - package-ecosystem: github-actions
