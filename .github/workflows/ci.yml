@@ -72,7 +72,7 @@ jobs:
         run: bash scripts/package-linux.sh --target ${{ matrix.target }} --smoke-output smoke-output
       - name: Upload Linux application
         if: runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nebulabook-${{ matrix.arch }}
           path: release-assets/*
@@ -80,7 +80,7 @@ jobs:
           retention-days: 30
       - name: Upload Linux display verification
         if: always() && runner.os == 'Linux'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: display-checks-${{ matrix.arch }}
           path: smoke-output/*
@@ -141,7 +141,7 @@ jobs:
           @{ commit = $env:GITHUB_SHA; version = $version; arch = $arch; target = '${{ matrix.target }}'; host_arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString(); pe_machine = ('{0:x4}' -f $machine); rust = (rustc --version); bytes = $bytes.Length; sha256 = $hash } | ConvertTo-Json | Set-Content "release-assets/build-info-windows-$arch.json" -Encoding utf8
       - name: Upload Windows application
         if: runner.os == 'Windows'
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: nebulabook-windows-${{ matrix.arch }}
           path: release-assets/*
