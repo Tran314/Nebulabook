@@ -19,7 +19,7 @@ html2text = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
-rfd = { version = "0.15", optional = true, default-features = false, features = ["xdg-portal", "async-std"] }
+rfd = { version = "0.16", optional = true, default-features = false, features = ["xdg-portal", "async-std"] }
 
 # Windows uses native Direct3D 12, including the OS-provided WARP fallback.
 # eframe 0.31 does not enable wgpu's DX12 feature itself.
