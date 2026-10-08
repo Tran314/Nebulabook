@@ -23,7 +23,7 @@
 
 已通过：
 
-- 71 个完整 Rust 测试：57 库单元 + 7 启动/平台配置 + 5 Linux XDG/权限/更名兼容 + 2 工作流集成
+- 75 个完整 Rust 测试：61 库单元 + 7 启动/平台配置 + 5 Linux XDG/权限/更名兼容 + 2 工作流集成
 - 41 个无 desktop 数据层测试
 - Linux 全目标 Clippy（warnings denied）与 rustfmt
 - Windows x64、x86、ARM64 全目标交叉 Clippy（源码/测试检查，不是 EXE 运行）
@@ -76,3 +76,9 @@ Windows：原生 renderer 初始化/存活；x64/x86/ARM64 的 PE machine、目�
 ## Nebulabook 更名回归
 
 包/bin、UI、仓库和发行文件均统一为 Nebulabook / `nebulabook`；数据身份和旧浏览器协议不变。新增回归实际写入旧数据目录，再由更名后的库在独立子进程打开，核验原有笔记与文件字节未变且不创建新的空白数据目录。诊断配置采用 `NEBULABOOK_` 前缀，同时保留旧 `NEBULA_` 显式配置后备；新名称优先。安装回归确保旧程序、菜单、launcher及真实旧笔记目录均保持不变。
+
+## 真实 Linux CI 发现与修复
+
+首次 ARM64 窗口启动发现 runner 缺少 `libxkbcommon-x11.so.0`，已补入 CI 运行库；README 的用户安装依赖已有该包。随后 [7f6f247 的真实 CI](https://github.com/Tran314/Nebulabook/actions/runs/37811469265) 在 Linux x64/ARM64 均成功初始化 Glow 和中文字形，但严格键盘保存验收发现标题 Tab 导航又被正文当成字符，导致正文多出前导制表符。没有放宽保存断言或发布失败产物。
+
+已用实际 egui RawInput 在分阶段、整批和逐字符时序复现并修正：只消费从标题进入正文的第一枚导航 Tab，正文已有焦点时的 Tab/ShiftTab 缩进和点击后 Tab 仍保留。4项新增回归全部通过，原输入排序与关闭排队机制不变。后续真实 CI 继续检查完整编辑/保存/关闭/重开以及 Wayland。烟测失败时保留本次隔离测试数据和截图，不读取用户笔记。

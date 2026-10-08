@@ -14,6 +14,8 @@
 - [ ] cargo test --locked --all-targets
 - [ ] cargo clippy --locked --all-targets -- -D warnings
 - [ ] cargo build --locked --release
-- [ ] Windows 中文字体与原生窗口交互
+- [ ] Linux X11 / Wayland 及中文字体检查（涉及 Linux 时）
+- [ ] Windows 原生窗口检查（涉及 Windows 时）
+- [ ] 更名、升级不改变旧数据目录或覆盖备份
 
 请明确未运行的检查、平台限制和剩余风险。UI 改动可附截图。
