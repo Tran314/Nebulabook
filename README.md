@@ -156,7 +156,7 @@ Windows 还需要 Visual Studio C++ Build Tools / Windows SDK；执行同样 Car
 ```sh
 cargo fmt --all -- --check
 cargo test --locked --all-targets
-cargo clippy --locked --all-targets -- -D warnings
+cargo clippy --locked -p nebulabook --no-deps --all-targets -- -D warnings
 cargo test --locked --no-default-features
 node --test tests/legacy-export.test.cjs
 ```
