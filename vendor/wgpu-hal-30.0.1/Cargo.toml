@@ -521,7 +521,7 @@ optional = true
 default-features = false
 
 [target."cfg(windows)".dependencies.windows-core]
-version = "0.62"
+version = "0.100"
 optional = true
 default-features = false
 
