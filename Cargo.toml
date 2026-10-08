@@ -7,6 +7,11 @@ description = "轻量离线 Rust 原生记事本"
 license = "MIT"
 repository = "https://github.com/Tran314/Nebulabook"
 
+[workspace]
+members = ["vendor/wgpu-hal-30.0.1"]
+default-members = ["."]
+resolver = "2"
+
 [features]
 default = ["desktop"]
 desktop = ["dep:eframe", "dep:rfd", "dep:wgpu"]
@@ -44,3 +49,7 @@ opt-level = "s"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# Temporary upstream x86 DX12 pipeline ABI correction; see vendor/PATCHES.md.
+[patch.crates-io]
+wgpu-hal = { path = "vendor/wgpu-hal-30.0.1" }
