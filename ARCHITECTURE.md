@@ -2,7 +2,7 @@
 
 ## 运行边界
 
-单个 Rust 桌面进程。eframe 创建操作系统窗口，以 egui 渲染 UI；Windows10+使用WGPU/DX12，默认硬件优先并保留系统WARP软件后备；Linux使用Glow/OpenGL，启用X11和Wayland。不启动 HTTP 服务、不打开浏览器、不嵌入 WebView、不执行导入的 HTML/JavaScript。文件对话框由操作系统提供；Linux另外提供不依赖portal的完整路径入口。
+单个 Rust 桌面进程。eframe 创建操作系统窗口，以 egui 渲染 UI；Windows使用WGPU30/DX12，默认硬件优先并保留系统WARP软件后备；硬件要求资源绑定Tier2，较早Windows10和旧GPU组合的验证边界见README；Linux使用Glow/OpenGL，启用X11和Wayland。不启动 HTTP 服务、不打开浏览器、不嵌入 WebView、不执行导入的 HTML/JavaScript。文件对话框由操作系统提供；Linux另外提供不依赖portal的完整路径入口。
 
 ## 数据流
 

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Real display-server smoke checks; never substitutes for unit tests or real GPU QA."""
 import json
+from contextlib import contextmanager
 import hashlib
 import os
 from pathlib import Path
@@ -14,6 +15,31 @@ binary, backend, output_arg = sys.argv[1:]
 output = Path(output_arg)
 processes = []
 handles = []
+active_data_dir = None
+
+
+def capture_diagnostics():
+    """Only inspect this test's disposable data/display, never a real notebook."""
+    if active_data_dir is not None and active_data_dir.exists():
+        for index, path in enumerate(active_data_dir.rglob("notebook.json")):
+            data = path.read_bytes()
+            (output / f"{backend}-failure-notebook-{index}.json").write_bytes(data[:65536])
+            print("Disposable smoke notebook:", data[:4096].decode(errors="replace"), flush=True)
+    if backend == "x11" and shutil.which("import"):
+        try:
+            subprocess.run(["import", "-window", "root", str(output / "x11-failure.png")], timeout=10, check=False)
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+
+
+@contextmanager
+def isolated_workspace():
+    with tempfile.TemporaryDirectory(prefix=f"nebulabook-{backend}-") as temporary:
+        try:
+            yield temporary
+        except BaseException:
+            capture_diagnostics()
+            raise
 
 
 def wait_for(condition, message, timeout=20):
@@ -42,7 +68,7 @@ def command(*args):
 
 
 try:
-    with tempfile.TemporaryDirectory(prefix=f'nebulabook-{backend}-') as temporary:
+    with isolated_workspace() as temporary:
         base = Path(temporary)
         env = os.environ.copy()
         for key, name in [('XDG_DATA_HOME', 'data'), ('XDG_CONFIG_HOME', 'config'),
@@ -50,6 +76,7 @@ try:
             path = base / name
             path.mkdir(mode=0o700)
             env[key] = str(path)
+        active_data_dir = Path(env['XDG_DATA_HOME'])
         env.update(NEBULABOOK_NO_ERROR_DIALOG='1', NEBULABOOK_REQUIRE_CJK_FONT='1',
                    LIBGL_ALWAYS_SOFTWARE='1', RUST_BACKTRACE='1')
         if backend == 'x11':
@@ -91,6 +118,8 @@ try:
             # window/event loop, including the application's raw event ordering.
             window = command('xdotool', 'search', '--sync', '--onlyvisible', '--pid', str(app.pid)).splitlines()[0]
             command('xdotool', 'windowactivate', '--sync', window)
+            if shutil.which('import'):
+                subprocess.run(['import', '-window', window, str(output / 'x11-before-input.png')], check=True, timeout=10)
             command('xdotool', 'key', '--clearmodifiers', 'ctrl+n')
             time.sleep(0.3)
             command('xdotool', 'type', '--clearmodifiers', '--delay', '15', 'Linux smoke title')
