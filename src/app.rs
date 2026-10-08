@@ -896,6 +896,32 @@ impl NotepadApp {
                 if title.changed() {
                     self.edited();
                 }
+                if title.lost_focus() {
+                    // egui moves focus before TextEdit handles events, but leaves
+                    // the navigation Tab for the newly focused multiline editor.
+                    // Consume only that first Tab, not indentation after a click
+                    // or subsequent Tabs pressed after entering the body.
+                    ui.input_mut(|input| {
+                        if let Some(index) = input.events.iter().position(|event| {
+                            matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                                || matches!(
+                                    event,
+                                    egui::Event::Key {
+                                        key: egui::Key::Tab,
+                                        pressed: true,
+                                        ..
+                                    }
+                                )
+                        }) {
+                            if matches!(&input.events[index], egui::Event::Key {
+                                key: egui::Key::Tab, pressed: true, modifiers, ..
+                            } if !modifiers.shift)
+                            {
+                                input.events.remove(index);
+                            }
+                        }
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt(("editor-scroll", &id))
@@ -1017,6 +1043,160 @@ mod tests {
         render_input(app, ctx, click_at(egui::pos2(400.0, 180.0)));
         render_input(app, ctx, vec![egui::Event::Text(" FIRST".into())]);
         assert_eq!(app.content, "before FIRST");
+    }
+
+    fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn keyboard_new_title_tab_body_and_save_preserve_exact_text() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        for mode in ["staged", "single_batch", "one_event_per_frame"] {
+            let (_directory, mut app) = app();
+            let ctx = egui::Context::default();
+            render_input(&mut app, &ctx, Vec::new());
+            let batches = vec![
+                vec![
+                    key_event(egui::Key::N, true, command),
+                    key_event(egui::Key::N, false, command),
+                ],
+                vec![],
+                vec![egui::Event::Text("Linux smoke title".into())],
+                vec![
+                    key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                    key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                ],
+                vec![egui::Event::Text("Linux smoke body 123".into())],
+                vec![
+                    key_event(egui::Key::S, true, command),
+                    key_event(egui::Key::S, false, command),
+                ],
+            ];
+            if mode == "single_batch" {
+                render_input(&mut app, &ctx, batches.into_iter().flatten().collect());
+            } else if mode == "one_event_per_frame" {
+                for event in batches.into_iter().flatten() {
+                    if let egui::Event::Text(text) = event {
+                        for character in text.chars() {
+                            render_input(
+                                &mut app,
+                                &ctx,
+                                vec![egui::Event::Text(character.to_string())],
+                            );
+                        }
+                    } else {
+                        render_input(&mut app, &ctx, vec![event]);
+                    }
+                }
+            } else {
+                for events in batches {
+                    render_input(&mut app, &ctx, events);
+                }
+            }
+            assert_eq!(app.title, "Linux smoke title", "mode={mode}");
+            assert_eq!(app.content, "Linux smoke body 123", "mode={mode}");
+            let saved: Notebook = serde_json::from_slice(
+                &std::fs::read(app.storage.as_ref().unwrap().path()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(saved.notes.len(), 1, "mode={mode}");
+            assert_eq!(saved.notes[0].title, "Linux smoke title", "mode={mode}");
+            assert_eq!(
+                saved.notes[0].content, "Linux smoke body 123",
+                "mode={mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn title_tab_navigates_once_then_body_tabs_indent_and_unindent() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let ctx = egui::Context::default();
+        render_input(&mut app, &ctx, Vec::new());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("title".into()),
+                key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                egui::Event::Text("body".into()),
+            ],
+        );
+        assert_eq!(app.title, "title");
+        assert_eq!(app.content, "\tbody");
+        let body_focus = ctx.memory(|memory| memory.focused());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.content, "body");
+        assert_eq!(ctx.memory(|memory| memory.focused()), body_focus);
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.content, "body\t");
+        assert_eq!(ctx.memory(|memory| memory.focused()), body_focus);
+    }
+
+    #[test]
+    fn clicking_body_then_tab_in_same_batch_keeps_intentional_indentation() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let ctx = egui::Context::default();
+        render_input(&mut app, &ctx, Vec::new());
+        let mut events = click_at(egui::pos2(400.0, 180.0));
+        events.extend([
+            key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+            key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+            egui::Event::Text("clicked body".into()),
+        ]);
+        render_input(&mut app, &ctx, events);
+        assert!(app.title.is_empty());
+        assert_eq!(app.content, "\tclicked body");
+    }
+
+    #[test]
+    fn title_shift_tab_does_not_change_editor_text() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        app.title = "title".into();
+        app.content = "\tbody".into();
+        let ctx = egui::Context::default();
+        let output = render_input(&mut app, &ctx, Vec::new());
+        let title_position = label_position(&output, "title");
+        let title_focus = ctx.memory(|memory| memory.focused());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::SHIFT)],
+        );
+        render_input(&mut app, &ctx, Vec::new());
+        assert_ne!(ctx.memory(|memory| memory.focused()), title_focus);
+        assert_eq!(app.title, "title");
+        assert_eq!(app.content, "\tbody");
+        render_input(&mut app, &ctx, click_at(title_position));
+        render_input(&mut app, &ctx, vec![egui::Event::Text("X".into())]);
+        assert_eq!(app.title.len(), "titleX".len());
+        assert!(app.title.contains('X'));
+        assert_eq!(app.content, "\tbody");
     }
 
     #[test]

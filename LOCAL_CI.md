@@ -18,7 +18,7 @@ Node 18+ 仅用于开发检查。设置 `NEBULABOOK_REQUIRE_CJK_FONT=1` 可让�
 Ubuntu 22.04 示例：
 
 ```sh
-sudo apt install libxkbcommon-dev libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libegl-mesa0 \
+sudo apt install libxkbcommon-dev libxkbcommon-x11-0 libgl1-mesa-dev libegl1-mesa-dev libgles2-mesa-dev libgl1-mesa-dri libegl-mesa0 \
   fonts-noto-cjk xvfb xauth xdotool openbox weston dbus-x11 imagemagick
 cargo build --locked --release
 bash scripts/smoke-linux.sh target/release/nebulabook
