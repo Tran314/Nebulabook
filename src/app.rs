@@ -57,6 +57,7 @@ pub struct NotepadApp {
     discard_on_exit: bool,
     pending_input: Vec<egui::Event>,
     close_after_input: bool,
+    settle_editor_focus: bool,
     check_cjk_font: bool,
     #[cfg(target_os = "linux")]
     path_dialog: Option<PathDialog>,
@@ -101,6 +102,7 @@ impl NotepadApp {
             discard_on_exit: false,
             pending_input: Vec::new(),
             close_after_input: false,
+            settle_editor_focus: false,
             check_cjk_font: false,
             #[cfg(target_os = "linux")]
             path_dialog: None,
@@ -489,9 +491,9 @@ impl NotepadApp {
                 cancel = ui.button("取消").clicked();
             });
         });
-        if !cancel
-            && !response.should_close()
-            && !(submit && self.submit_path(dialog.action, &dialog.path))
+        if !(cancel
+            || response.should_close()
+            || (submit && self.submit_path(dialog.action, &dialog.path)))
         {
             self.path_dialog = Some(dialog);
         }
@@ -563,6 +565,21 @@ impl NotepadApp {
     fn order_input(&mut self, ctx: &egui::Context, input: &mut egui::RawInput) {
         let mut events = std::mem::take(&mut self.pending_input);
         events.append(&mut input.events);
+        if input.viewport().visible() == Some(false) {
+            // eframe retains raw input without a UI pass while hidden. Do not
+            // split it here: another hidden tick would otherwise put our later
+            // queued chunk ahead of the earlier input retained by eframe.
+            input.events = events;
+            return;
+        }
+        if std::mem::take(&mut self.settle_editor_focus) && !events.is_empty() {
+            // egui installs a TextEdit's navigation filter only after it also
+            // had focus in the previous pass. Let a newly clicked editor settle
+            // before replaying input, so its first Tab indents rather than leaves.
+            self.pending_input = events;
+            ctx.request_repaint();
+            return;
+        }
         let mut editing_event_seen = false;
         let mut focus_change_seen = false;
         let split = events.iter().position(|event| {
@@ -574,13 +591,15 @@ impl NotepadApp {
                 egui::Event::Text(_) | egui::Event::Paste(_) | egui::Event::Cut
                     | egui::Event::Ime(_) | egui::Event::Key { .. });
             if (editing_event_seen && focus_change)
-                || (focus_change_seen && editing_event && !focus_change) { return true; }
+                || (focus_change_seen && (editing_event || focus_change)) { return true; }
             editing_event_seen |= editing_event && !focus_change;
             focus_change_seen |= focus_change;
             false
         });
         if let Some(split) = split {
             // egui treats pointer focus changes before TextEdit's event loop.
+            // Apply each focus change before another focus/navigation event, too:
+            // a click into the body must take effect before its Tab key filter.
             // Render earlier keyboard/IME events first, then replay the remainder
             // in order on the next repaint through egui itself (no custom editing).
             self.pending_input = events.split_off(split);
@@ -589,9 +608,10 @@ impl NotepadApp {
         input.events = events;
     }
 
-    fn frame(&mut self, ctx: &egui::Context) {
+    fn frame(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.check_cjk_font) {
-            self.has_cjk_font = ctx.fonts(|fonts| {
+            self.has_cjk_font = ctx.fonts_mut(|fonts| {
                 fonts.has_glyphs(&egui::FontId::proportional(16.0), "中文记事本保存回收站")
                     && fonts.has_glyphs(&egui::FontId::monospace(16.0), "中文记事本保存回收站")
             });
@@ -606,8 +626,8 @@ impl NotepadApp {
                 );
             }
         }
-        let (save, new) = self.shortcuts(ctx);
-        self.render(ctx);
+        let (save, new) = self.shortcuts(&ctx);
+        self.render(ui);
         if save {
             self.save_current();
         }
@@ -631,10 +651,10 @@ impl NotepadApp {
         if !self.pending_input.is_empty() {
             ctx.request_repaint();
         }
-        self.exit_dialog(ctx);
+        self.exit_dialog(&ctx);
         #[cfg(target_os = "linux")]
-        self.manual_path_dialog(ctx);
-        self.autosave(ctx);
+        self.manual_path_dialog(&ctx);
+        self.autosave(&ctx);
     }
 
     fn apply_action(&mut self, action: UiAction) {
@@ -660,11 +680,11 @@ impl NotepadApp {
         }
     }
 
-    fn render(&mut self, ctx: &egui::Context) {
+    fn render(&mut self, ui: &mut egui::Ui) {
         // Buttons are rendered before the editor. Defer mutations and snapshots
         // until its TextEdit has consumed all text/IME events in this frame.
         let mut actions = Vec::new();
-        egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
+        egui::Panel::top("toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.heading("Nebulabook");
                 ui.separator();
@@ -681,21 +701,21 @@ impl NotepadApp {
                     }
                     ui.menu_button("导入 / 导出", |ui| {
                         if ui.button("导入 TXT / Markdown / HTML / JSON…").clicked() {
-                            ui.close_menu();
+                            ui.close();
                             actions.push(UiAction::Import);
                         }
                         ui.separator();
                         if ui.button("导出全部为 JSON 备份…").clicked() {
-                            ui.close_menu();
+                            ui.close();
                             actions.push(UiAction::ExportBackup);
                         }
                         ui.add_enabled_ui(self.selected_id.is_some(), |ui| {
                             if ui.button("导出当前笔记为 TXT…").clicked() {
-                                ui.close_menu();
+                                ui.close();
                                 actions.push(UiAction::ExportNote(false));
                             }
                             if ui.button("导出当前笔记为 Markdown…").clicked() {
-                                ui.close_menu();
+                                ui.close();
                                 actions.push(UiAction::ExportNote(true));
                             }
                         });
@@ -712,7 +732,7 @@ impl NotepadApp {
                                     let enabled = !matches!(action, PathAction::Note(_))
                                         || self.selected_id.is_some();
                                     if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                                        ui.close_menu();
+                                        ui.close();
                                         actions.push(UiAction::ManualPath(action));
                                     }
                                 }
@@ -756,7 +776,7 @@ impl NotepadApp {
             }
         });
 
-        egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
+        egui::Panel::bottom("status").show(ui, |ui| {
             ui.horizontal(|ui| {
                 if self.dirty {
                     ui.colored_label(egui::Color32::from_rgb(170, 100, 10), "● 未保存");
@@ -778,11 +798,11 @@ impl NotepadApp {
             });
         });
 
-        egui::SidePanel::left("notes")
-            .default_width(245.0)
-            .min_width(180.0)
-            .max_width(420.0)
-            .show(ctx, |ui| {
+        egui::Panel::left("notes")
+            .default_size(245.0)
+            .min_size(180.0)
+            .max_size(420.0)
+            .show(ui, |ui| {
                 let search_id = ui.make_persistent_id("note-search");
                 if self.focus_search {
                     ui.memory_mut(|memory| memory.request_focus(search_id));
@@ -833,7 +853,7 @@ impl NotepadApp {
                 });
             });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show(ui, |ui| {
             if self.storage.is_none() {
                 ui.centered_and_justified(|ui| {
                     ui.label("请先解决上方文件错误。原有数据不会被覆盖。");
@@ -896,6 +916,32 @@ impl NotepadApp {
                 if title.changed() {
                     self.edited();
                 }
+                if title.lost_focus() {
+                    // egui moves focus before TextEdit handles events, but leaves
+                    // the navigation Tab for the newly focused multiline editor.
+                    // Consume only that first Tab, not indentation after a click
+                    // or subsequent Tabs pressed after entering the body.
+                    ui.input_mut(|input| {
+                        if let Some(index) = input.events.iter().position(|event| {
+                            matches!(event, egui::Event::PointerButton { pressed: true, .. })
+                                || matches!(
+                                    event,
+                                    egui::Event::Key {
+                                        key: egui::Key::Tab,
+                                        pressed: true,
+                                        ..
+                                    }
+                                )
+                        }) {
+                            if matches!(&input.events[index], egui::Event::Key {
+                                key: egui::Key::Tab, pressed: true, modifiers, ..
+                            } if !modifiers.shift)
+                            {
+                                input.events.remove(index);
+                            }
+                        }
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical()
                     .id_salt(("editor-scroll", &id))
@@ -909,6 +955,10 @@ impl NotepadApp {
                                 .desired_width(f32::INFINITY)
                                 .lock_focus(true),
                         );
+                        if response.gained_focus() {
+                            self.settle_editor_focus = true;
+                            ui.ctx().request_repaint();
+                        }
                         if response.changed() {
                             self.edited();
                         }
@@ -926,8 +976,28 @@ impl eframe::App for NotepadApp {
         self.order_input(ctx, input);
     }
 
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        self.frame(ctx);
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Hidden logic sees fresh window state but stale UI events. Always defer
+        // a hidden close until an actual UI pass has consumed retained input.
+        let hidden_close = ctx.input(|input| {
+            input.viewport().visible() == Some(false)
+                && (input.viewport().close_requested() || self.close_after_input)
+        });
+        if hidden_close {
+            self.close_after_input = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            ctx.request_repaint();
+            return;
+        }
+        // Keep scheduled saves alive while hidden without touching UI input.
+        self.autosave(ctx);
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.frame(ui);
     }
 }
 
@@ -949,6 +1019,18 @@ mod tests {
         std::fs::create_dir(path).unwrap();
     }
 
+    fn run_headless(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        render: impl FnMut(&mut egui::Ui),
+    ) -> egui::FullOutput {
+        let mut output = ctx.run_ui(input, render);
+        // These tests inspect shapes and application state without a GPU renderer.
+        // egui 0.36 requires explicitly acknowledging unused texture updates.
+        output.textures_delta.clear();
+        output
+    }
+
     fn render_input(
         app: &mut NotepadApp,
         ctx: &egui::Context,
@@ -963,7 +1045,7 @@ mod tests {
             ..Default::default()
         };
         eframe::App::raw_input_hook(app, ctx, &mut raw);
-        let mut output = ctx.run(raw, |ctx| app.frame(ctx));
+        let mut output = run_headless(ctx, raw, |ctx| app.frame(ctx));
         while !app.pending_input.is_empty() {
             let mut raw = egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
@@ -973,7 +1055,7 @@ mod tests {
                 ..Default::default()
             };
             eframe::App::raw_input_hook(app, ctx, &mut raw);
-            output = ctx.run(raw, |ctx| app.frame(ctx));
+            output = run_headless(ctx, raw, |ctx| app.frame(ctx));
         }
         output
     }
@@ -1017,6 +1099,160 @@ mod tests {
         render_input(app, ctx, click_at(egui::pos2(400.0, 180.0)));
         render_input(app, ctx, vec![egui::Event::Text(" FIRST".into())]);
         assert_eq!(app.content, "before FIRST");
+    }
+
+    fn key_event(key: egui::Key, pressed: bool, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: Some(key),
+            pressed,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn keyboard_new_title_tab_body_and_save_preserve_exact_text() {
+        let command = egui::Modifiers {
+            ctrl: true,
+            command: true,
+            ..Default::default()
+        };
+        for mode in ["staged", "single_batch", "one_event_per_frame"] {
+            let (_directory, mut app) = app();
+            let ctx = egui::Context::default();
+            render_input(&mut app, &ctx, Vec::new());
+            let batches = vec![
+                vec![
+                    key_event(egui::Key::N, true, command),
+                    key_event(egui::Key::N, false, command),
+                ],
+                vec![],
+                vec![egui::Event::Text("Linux smoke title".into())],
+                vec![
+                    key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                    key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                ],
+                vec![egui::Event::Text("Linux smoke body 123".into())],
+                vec![
+                    key_event(egui::Key::S, true, command),
+                    key_event(egui::Key::S, false, command),
+                ],
+            ];
+            if mode == "single_batch" {
+                render_input(&mut app, &ctx, batches.into_iter().flatten().collect());
+            } else if mode == "one_event_per_frame" {
+                for event in batches.into_iter().flatten() {
+                    if let egui::Event::Text(text) = event {
+                        for character in text.chars() {
+                            render_input(
+                                &mut app,
+                                &ctx,
+                                vec![egui::Event::Text(character.to_string())],
+                            );
+                        }
+                    } else {
+                        render_input(&mut app, &ctx, vec![event]);
+                    }
+                }
+            } else {
+                for events in batches {
+                    render_input(&mut app, &ctx, events);
+                }
+            }
+            assert_eq!(app.title, "Linux smoke title", "mode={mode}");
+            assert_eq!(app.content, "Linux smoke body 123", "mode={mode}");
+            let saved: Notebook = serde_json::from_slice(
+                &std::fs::read(app.storage.as_ref().unwrap().path()).unwrap(),
+            )
+            .unwrap();
+            assert_eq!(saved.notes.len(), 1, "mode={mode}");
+            assert_eq!(saved.notes[0].title, "Linux smoke title", "mode={mode}");
+            assert_eq!(
+                saved.notes[0].content, "Linux smoke body 123",
+                "mode={mode}"
+            );
+        }
+    }
+
+    #[test]
+    fn title_tab_navigates_once_then_body_tabs_indent_and_unindent() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let ctx = egui::Context::default();
+        render_input(&mut app, &ctx, Vec::new());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::Text("title".into()),
+                key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+                key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+                egui::Event::Text("body".into()),
+            ],
+        );
+        assert_eq!(app.title, "title");
+        assert_eq!(app.content, "\tbody");
+        let body_focus = ctx.memory(|memory| memory.focused());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::SHIFT)],
+        );
+        assert_eq!(app.content, "body");
+        assert_eq!(ctx.memory(|memory| memory.focused()), body_focus);
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::NONE)],
+        );
+        assert_eq!(app.content, "body\t");
+        assert_eq!(ctx.memory(|memory| memory.focused()), body_focus);
+    }
+
+    #[test]
+    fn clicking_body_then_tab_in_same_batch_keeps_intentional_indentation() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let ctx = egui::Context::default();
+        render_input(&mut app, &ctx, Vec::new());
+        let mut events = click_at(egui::pos2(400.0, 180.0));
+        events.extend([
+            key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+            key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+            egui::Event::Text("clicked body".into()),
+        ]);
+        render_input(&mut app, &ctx, events);
+        assert!(app.title.is_empty());
+        assert_eq!(app.content, "\tclicked body");
+    }
+
+    #[test]
+    fn title_shift_tab_does_not_change_editor_text() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        app.title = "title".into();
+        app.content = "\tbody".into();
+        let ctx = egui::Context::default();
+        let output = render_input(&mut app, &ctx, Vec::new());
+        let title_position = label_position(&output, "title");
+        let title_focus = ctx.memory(|memory| memory.focused());
+        render_input(
+            &mut app,
+            &ctx,
+            vec![key_event(egui::Key::Tab, true, egui::Modifiers::SHIFT)],
+        );
+        render_input(&mut app, &ctx, Vec::new());
+        assert_ne!(ctx.memory(|memory| memory.focused()), title_focus);
+        assert_eq!(app.title, "title");
+        assert_eq!(app.content, "\tbody");
+        render_input(&mut app, &ctx, click_at(title_position));
+        render_input(&mut app, &ctx, vec![egui::Event::Text("X".into())]);
+        assert_eq!(app.title.len(), "titleX".len());
+        assert!(app.title.contains('X'));
+        assert_eq!(app.content, "\tbody");
     }
 
     #[test]
@@ -1138,8 +1374,10 @@ mod tests {
         focus_body_and_type(&mut app, &ctx);
         let output = render_input(&mut app, &ctx, Vec::new());
         let mut events = vec![
-            egui::Event::Ime(egui::ImeEvent::Enabled),
-            egui::Event::Ime(egui::ImeEvent::Preedit("中文".into())),
+            egui::Event::Ime(egui::ImeEvent::Preedit {
+                text: "中文".into(),
+                active_range_chars: None,
+            }),
             egui::Event::Ime(egui::ImeEvent::Commit("中文".into())),
         ];
         events.extend(click_at(label_position(&output, "＋ 新建")));
@@ -1258,7 +1496,7 @@ mod tests {
             .events
             .push(egui::ViewportEvent::Close);
         eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
-        let output = ctx.run(raw, |ctx| app.frame(ctx));
+        let output = run_headless(&ctx, raw, |ctx| app.frame(ctx));
         assert!(app.close_after_input);
         assert!(!app.pending_input.is_empty());
         assert!(output.viewport_output[&egui::ViewportId::ROOT]
@@ -1279,6 +1517,219 @@ mod tests {
                 .content,
             "before FIRST LAST"
         );
+    }
+
+    fn hidden_close_input(events: Vec<egui::Event>, minimized: bool) -> egui::RawInput {
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        let viewport = raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.minimized = Some(minimized);
+        viewport.occluded = Some(!minimized);
+        viewport.events.push(egui::ViewportEvent::Close);
+        raw
+    }
+
+    fn hidden_tick(
+        app: &mut NotepadApp,
+        ctx: &egui::Context,
+        raw: &mut egui::RawInput,
+    ) -> egui::LogicOutput {
+        eframe::App::raw_input_hook(app, ctx, raw);
+        ctx.run_logic(raw, |ctx| {
+            eframe::App::logic(app, ctx, &mut eframe::Frame::_new_kittest());
+        })
+    }
+
+    fn restore_retained_input(
+        app: &mut NotepadApp,
+        ctx: &egui::Context,
+        mut raw: egui::RawInput,
+    ) -> egui::FullOutput {
+        let viewport = raw.viewports.get_mut(&egui::ViewportId::ROOT).unwrap();
+        viewport.minimized = Some(false);
+        viewport.occluded = Some(false);
+        viewport.events.clear();
+        eframe::App::raw_input_hook(app, ctx, &mut raw);
+        let mut output = run_headless(ctx, raw, |ui| app.frame(ui));
+        if !app.pending_input.is_empty() {
+            output = render_input(app, ctx, Vec::new());
+        }
+        output
+    }
+
+    fn assert_hidden_close_deferred(app: &NotepadApp, output: &egui::LogicOutput) {
+        let commands = &output.viewport_commands[&egui::ViewportId::ROOT];
+        assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+        assert!(commands.contains(&egui::ViewportCommand::Visible(true)));
+        assert!(commands.contains(&egui::ViewportCommand::Minimized(false)));
+        assert!(commands.contains(&egui::ViewportCommand::Focus));
+        assert!(!commands.contains(&egui::ViewportCommand::Close));
+        assert!(app.close_after_input);
+    }
+
+    #[test]
+    fn hidden_close_before_autosave_restores_then_saves_and_exits() {
+        for minimized in [true, false] {
+            let (_directory, mut app) = app();
+            app.new_note();
+            app.content = "draft before autosave deadline".into();
+            app.edited();
+            let ctx = egui::Context::default();
+            let mut raw = hidden_close_input(Vec::new(), minimized);
+            let output = hidden_tick(&mut app, &ctx, &mut raw);
+            assert_hidden_close_deferred(&app, &output);
+            assert!(app.dirty);
+            assert!(app.notebook.notes[0].content.is_empty());
+            let output = restore_retained_input(&mut app, &ctx, raw);
+            assert!(!app.dirty);
+            assert!(!app.close_after_input);
+            assert_eq!(
+                app.notebook.notes[0].content,
+                "draft before autosave deadline"
+            );
+            assert!(output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close));
+        }
+    }
+
+    #[test]
+    fn hidden_close_save_failures_keep_draft_until_explicit_discard() {
+        for external_conflict in [false, true] {
+            let (_directory, mut app) = app();
+            app.new_note();
+            app.content = "protected unsaved draft".into();
+            app.edited();
+            if external_conflict {
+                std::fs::write(app.storage.as_ref().unwrap().path(), "external writer").unwrap();
+            } else {
+                fail_future_saves(&app);
+            }
+            let ctx = egui::Context::default();
+            let mut raw = hidden_close_input(Vec::new(), true);
+            let output = hidden_tick(&mut app, &ctx, &mut raw);
+            assert_hidden_close_deferred(&app, &output);
+            let output = restore_retained_input(&mut app, &ctx, raw);
+            assert!(app.dirty);
+            assert!(app.confirm_exit);
+            assert!(app.error.is_some());
+            assert_eq!(app.content, "protected unsaved draft");
+            assert!(app.notebook.notes[0].content.is_empty());
+            let commands = &output.viewport_output[&egui::ViewportId::ROOT].commands;
+            assert!(commands.contains(&egui::ViewportCommand::CancelClose));
+            assert!(!commands.contains(&egui::ViewportCommand::Close));
+            if external_conflict {
+                assert_eq!(
+                    std::fs::read_to_string(app.storage.as_ref().unwrap().path()).unwrap(),
+                    "external writer"
+                );
+            }
+            app.discard_on_exit = true;
+            app.confirm_exit = false;
+            let mut raw = hidden_close_input(Vec::new(), true);
+            let output = hidden_tick(&mut app, &ctx, &mut raw);
+            assert_hidden_close_deferred(&app, &output);
+            let output = restore_retained_input(&mut app, &ctx, raw);
+            assert!(output.viewport_output[&egui::ViewportId::ROOT]
+                .commands
+                .contains(&egui::ViewportCommand::Close));
+            assert_eq!(app.content, "protected unsaved draft");
+        }
+    }
+
+    #[test]
+    fn repeated_hidden_ticks_preserve_input_order_until_visible_close() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let original = app.selected_id.clone().unwrap();
+        app.content = "before".into();
+        app.edited();
+        app.save_current();
+        let ctx = egui::Context::default();
+        focus_body_and_type(&mut app, &ctx);
+        let output = render_input(&mut app, &ctx, Vec::new());
+        let mut events = vec![egui::Event::Text(" LAST".into())];
+        events.extend(click_at(label_position(&output, "＋ 新建")));
+        events.push(egui::Event::Text("new title".into()));
+        let mut raw = hidden_close_input(events.clone(), true);
+        let output = hidden_tick(&mut app, &ctx, &mut raw);
+        assert_hidden_close_deferred(&app, &output);
+        assert_eq!(raw.events, events);
+        assert!(app.pending_input.is_empty());
+        assert_eq!(app.content, "before FIRST");
+        events.push(egui::Event::Text(" end".into()));
+        raw.events.push(egui::Event::Text(" end".into()));
+        let output = hidden_tick(&mut app, &ctx, &mut raw);
+        assert_hidden_close_deferred(&app, &output);
+        assert_eq!(raw.events, events);
+        assert!(app.pending_input.is_empty());
+        let output = restore_retained_input(&mut app, &ctx, raw);
+        assert_eq!(app.notebook.notes.len(), 2);
+        assert_eq!(
+            app.notebook
+                .notes
+                .iter()
+                .find(|note| note.id == original)
+                .unwrap()
+                .content,
+            "before FIRST LAST"
+        );
+        assert_eq!(app.title, "new title end");
+        assert!(!app.dirty);
+        assert!(app.pending_input.is_empty());
+        assert!(!app.close_after_input);
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::Close));
+    }
+
+    #[test]
+    fn close_waits_for_clicked_editor_focus_and_queued_indentation() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        let ctx = egui::Context::default();
+        render_input(&mut app, &ctx, Vec::new());
+        let mut events = click_at(egui::pos2(400.0, 180.0));
+        events.extend([
+            key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
+            key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
+            egui::Event::Text("last input before close".into()),
+        ]);
+        let mut raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1000.0, 700.0),
+            )),
+            events,
+            ..Default::default()
+        };
+        raw.viewports
+            .get_mut(&egui::ViewportId::ROOT)
+            .unwrap()
+            .events
+            .push(egui::ViewportEvent::Close);
+        eframe::App::raw_input_hook(&mut app, &ctx, &mut raw);
+        let output = run_headless(&ctx, raw, |ui| app.frame(ui));
+        assert!(app.settle_editor_focus);
+        assert!(app.close_after_input);
+        assert!(!app.pending_input.is_empty());
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::CancelClose));
+        let output = render_input(&mut app, &ctx, Vec::new());
+        assert!(app.pending_input.is_empty());
+        assert!(!app.close_after_input);
+        assert!(!app.dirty);
+        assert_eq!(app.notebook.notes[0].content, "\tlast input before close");
+        assert!(output.viewport_output[&egui::ViewportId::ROOT]
+            .commands
+            .contains(&egui::ViewportCommand::Close));
     }
 
     #[test]
@@ -1350,7 +1801,7 @@ mod tests {
         assert!(!app.can_close());
         app.confirm_exit = true;
         let ctx = egui::Context::default();
-        let output = ctx.run(Default::default(), |ctx| app.exit_dialog(ctx));
+        let output = run_headless(&ctx, Default::default(), |ctx| app.exit_dialog(ctx));
         assert!(!output.shapes.is_empty());
         app.discard_on_exit = true;
         assert!(app.can_close());
@@ -1384,6 +1835,28 @@ mod tests {
         assert!(app.notebook.notes[0].title.is_empty());
         assert!(app.notebook.notes[0].content.is_empty());
         assert!(app.can_close());
+    }
+
+    #[test]
+    fn hidden_window_logic_saves_draft_without_drawing_or_consuming_pending_input() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        app.content = "draft awaiting autosave".into();
+        app.edited();
+        app.last_edit = Some(Instant::now() - AUTOSAVE_DELAY);
+        app.pending_input
+            .push(egui::Event::Text("queued input".into()));
+        eframe::App::logic(
+            &mut app,
+            &egui::Context::default(),
+            &mut eframe::Frame::_new_kittest(),
+        );
+        assert!(!app.dirty);
+        assert_eq!(app.notebook.notes[0].content, "draft awaiting autosave");
+        assert_eq!(
+            app.pending_input,
+            vec![egui::Event::Text("queued input".into())]
+        );
     }
 
     #[test]
@@ -1445,7 +1918,7 @@ mod tests {
         assert!(app.can_close());
         assert_eq!(std::fs::read(path).unwrap(), b"unreadable notebook");
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.render(ctx));
+        let _ = run_headless(&ctx, Default::default(), |ctx| app.render(ctx));
     }
 
     #[cfg(target_os = "linux")]
@@ -1499,7 +1972,7 @@ mod tests {
         assert!(app.error.as_ref().unwrap().contains("完整文件路径"));
         app.open_path_dialog(PathAction::Backup);
         let ctx = egui::Context::default();
-        let output = ctx.run(Default::default(), |ctx| app.manual_path_dialog(ctx));
+        let output = run_headless(&ctx, Default::default(), |ctx| app.manual_path_dialog(ctx));
         assert!(!output.shapes.is_empty());
         assert!(app.path_dialog.is_some());
         let raw = egui::RawInput {
@@ -1512,7 +1985,7 @@ mod tests {
             }],
             ..Default::default()
         };
-        let _ = ctx.run(raw, |ctx| app.manual_path_dialog(ctx));
+        let _ = run_headless(&ctx, raw, |ctx| app.manual_path_dialog(ctx));
         assert!(app.path_dialog.is_none());
         assert!(app.dirty);
         assert_eq!(app.content, "draft");
@@ -1531,10 +2004,10 @@ mod tests {
             return;
         }
         let _ =
-            ctx.run(Default::default(), |ctx| {
-                assert!(ctx.fonts(|fonts| fonts
+            run_headless(&ctx, Default::default(), |ctx| {
+                assert!(ctx.fonts_mut(|fonts| fonts
                     .has_glyphs(&egui::FontId::proportional(16.0), "中文记事本保存回收站")));
-                assert!(ctx.fonts(|fonts| fonts
+                assert!(ctx.fonts_mut(|fonts| fonts
                     .has_glyphs(&egui::FontId::monospace(16.0), "中文记事本保存回收站")));
             });
         eprintln!("CJK glyph check passed for proportional and monospace text");
@@ -1544,16 +2017,16 @@ mod tests {
     fn headless_egui_renders_empty_editing_trash_and_error_states() {
         let (_directory, mut app) = app();
         let ctx = egui::Context::default();
-        let _ = ctx.run(Default::default(), |ctx| app.render(ctx));
+        let _ = run_headless(&ctx, Default::default(), |ctx| app.render(ctx));
         app.new_note();
         app.content = "测试 <script>alert(1)</script> 只是纯文本".into();
         app.edited();
-        let output = ctx.run(Default::default(), |ctx| app.render(ctx));
+        let output = run_headless(&ctx, Default::default(), |ctx| app.render(ctx));
         assert!(!output.shapes.is_empty());
         app.set_deleted(true);
         app.toggle_trash(true);
-        let _ = ctx.run(Default::default(), |ctx| app.render(ctx));
+        let _ = run_headless(&ctx, Default::default(), |ctx| app.render(ctx));
         app.error = Some("磁盘已满".into());
-        let _ = ctx.run(Default::default(), |ctx| app.render(ctx));
+        let _ = run_headless(&ctx, Default::default(), |ctx| app.render(ctx));
     }
 }

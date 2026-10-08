@@ -59,7 +59,13 @@ ARM64 替换文件名中的 `x64` 为 `arm64`。不需要 sudo 启动。请从�
 
 ### Windows 安装与运行
 
-需要 Windows 10 或更新系统。渲染使用 Direct3D 12，优先显卡，在可用时使用系统 WARP 软件后备；不依赖显卡厂商 OpenGL 驱动，不捆绑额外 DXC DLL。
+此依赖升级使用 WGPU 30 / Direct3D 12，优先显卡，在可用时使用系统 WARP 软件后备；不依赖显卡厂商 OpenGL 驱动，继续使用系统 FXC 编译器，不捆绑额外 DXC DLL。
+
+图形验证与兼容边界：
+
+- WGPU 30 的 DX12 硬件路径要求资源绑定 Tier 2 或更高；旧显卡可能转为 WARP 软件渲染，CPU 占用和性能可能下降。参见 [WGPU 的适配器检查](https://github.com/gfx-rs/wgpu/blob/v30.0.1/wgpu-hal/src/dx12/adapter.rs)。
+- 微软文档确认 Windows 10 1709 起的系统 WARP 支持 Feature Level 12_0 / 12_1，对应至少 Tier 2。这是有官方资料支撑的推荐软件后备基线；更早的 Windows 10 与旧显卡组合尚未验证，不据此断言它们都无法运行。参见 [WARP 能力](https://learn.microsoft.com/en-us/windows/win32/direct3darticles/directx-warp)及 [Feature Level 与资源绑定级别](https://learn.microsoft.com/en-us/windows/win32/direct3d12/hardware-feature-levels)。
+- CI 使用 Windows 2025 的 x64 / x86 WOW64 和 Windows 11 ARM64 runner。各架构的实际启动结果以该提交的 CI 为准，这些环境不能替代所有 Windows 10、实体 GPU 或驱动组合的验证。
 
 EXE 依赖 Microsoft Visual C++ v14 Redistributable。若提示缺少 `VCRUNTIME140.dll`，请从微软官方安装与所选 EXE 架构一致的运行库：[x64](https://aka.ms/vc14/vc_redist.x64.exe)、[x86](https://aka.ms/vc14/vc_redist.x86.exe)、[ARM64](https://aka.ms/vc14/vc_redist.arm64.exe)。[官方说明](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist?view=msvc-170)。x86 EXE 在 64 位 Windows 上同样需要 x86 运行库。
 
@@ -134,7 +140,7 @@ NEBULABOOK_STARTUP_LOG="$HOME/nebulabook-startup.log" ./nebulabook
 
 ## 从源码构建
 
-安装 [官方 Rust 工具链](https://rust-lang.org/tools/install/)（Rust 1.89+；仓库使用 stable）和 Git。Linux Debian/Ubuntu 构建依赖：
+安装 [官方 Rust 工具链](https://rust-lang.org/tools/install/)（Rust 1.95+；仓库使用 stable）和 Git。Linux Debian/Ubuntu 构建依赖：
 
 ```sh
 sudo apt install build-essential pkg-config libxkbcommon-dev libgl1-mesa-dev
