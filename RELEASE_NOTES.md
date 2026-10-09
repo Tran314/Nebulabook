@@ -1,5 +1,7 @@
 # Nebulabook v4.1.0 · Linux 与 Windows 原生桌面
 
+本文保留已发布 v4.1.0 的说明。当前 main 尚未发布的 `.nebula` 更新和旧兼容代码清理不属于该 Release；当前行为以 [README](README.md) 为准。
+
 Rust 重构版本现在位于独立仓库 [Nebulabook](https://github.com/Tran314/Nebulabook)。原 [note-system](https://github.com/Tran314/note-system) 仓库及 v4.0.0 保留。
 
 ## 下载

@@ -14,10 +14,10 @@ pub struct Notebook {
     pub notes: Vec<Note>,
     pub folders: Vec<Folder>,
     pub tags: Vec<Tag>,
-    /// Original browser settings retained for reversible migration.
+    /// Inert archived values already supported by the current native schema.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legacy_settings: Vec<serde_json::Value>,
-    /// Complete original legacy envelopes keep unknown migration metadata intact.
+    /// Inert archived envelopes; preserved without interpreting or applying them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub legacy_archives: Vec<serde_json::Value>,
 }
@@ -41,10 +41,10 @@ pub struct Note {
     pub id: String,
     pub title: String,
     pub content: String,
-    /// Kept as inert text for lossless legacy migration; never rendered as HTML.
+    /// Original imported HTML kept as inert text; never rendered as HTML.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub original_html: Option<String>,
-    /// Original browser row/account metadata; inert data, never credentials.
+    /// Inert archived row metadata already supported by the current native schema.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legacy_metadata: Option<serde_json::Value>,
     pub folder_id: Option<String>,

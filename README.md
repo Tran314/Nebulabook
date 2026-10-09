@@ -2,7 +2,7 @@
 
 轻量、离线、本地保存的桌面记事本。Rust + egui/eframe 创建真正的原生窗口，不需要浏览器、WebView、Electron、账号或后端。
 
-当前 main 包含尚未发布的磨砂界面与 `.nebula` 格式更新；已有 v4.1.0 Release 保持原有内容。试用本轮改动请使用对应成功 [CI](https://github.com/Tran314/Nebulabook/actions) 的构建产物或从源码构建。
+当前 main 包含尚未发布的磨砂界面、`.nebula` 格式及旧兼容代码清理；已有 v4.1.0 Release 保持原有内容。试用本轮改动请使用对应成功 [CI](https://github.com/Tran314/Nebulabook/actions) 的构建产物或从源码构建。
 
 本仓库是 [Tran314/note-system](https://github.com/Tran314/note-system) 原生重构版本的独立后续项目，从原仓库 `0fc4091d96512053cb491976a5476a898b1c559d` 分出。旧仓库及其版本历史保留，原 MIT 许可保持不变；这里不包含已移除的前后端代码。
 
@@ -10,13 +10,13 @@
 
 - 中文界面，标题/正文编辑、全文搜索、置顶、回收站与恢复
 - 800 ms 自动保存，Ctrl+S 保存、Ctrl+N 新建、Ctrl+F 搜索
-- NEBULA、TXT、Markdown、HTML、旧版 JSON 和原生 JSON 导入
-- 默认完整 .nebula 备份；TXT / Markdown / JSON 可显式明文导出；导出不会覆盖已有文件
+- NEBULA、TXT、Markdown、HTML 导入
+- 完整 .nebula 备份；单篇笔记可导出为明文 TXT / Markdown；导出不会覆盖已有文件
 - 同目录原子保存、上一份快照备份、多实例排他文件锁
 - macOS 风格的磨砂分栏、圆角纸面与清晰排版，跟随系统浅深色；顶部切换笔记/回收站。这是应用内玻璃质感绘制，不读取桌面或调用系统背景模糊，详见 [视觉设计](VISUAL_DESIGN.md)
 - 保存失败保留草稿，关闭前提示重试、导出或明确放弃
 
-Markdown 按纯文本编辑。HTML 转为文本且保留原始 HTML 供追溯，不执行脚本。旧文件夹、标签、设置可作为迁移元数据保留，暂不提供完整管理界面。没有云同步、远程附件服务、富文本网页编辑器或自动更新。
+Markdown 按纯文本编辑。HTML 转为文本且保留原始 HTML 供追溯，不执行脚本。已有 `.nebula` 中的文件夹、标签和旧元数据会保留，暂不提供完整管理界面。没有云同步、远程附件服务、富文本网页编辑器或自动更新。
 
 ## 下载和选择架构
 
@@ -86,45 +86,33 @@ Get-FileHash .\nebulabook-v4.1.0-windows-x64.exe -Algorithm SHA256
 
 ## 数据、备份与恢复
 
-数据目录沿用旧 Nebula 原生版身份，不随仓库名、程序位置或 CPU 架构改变。新默认主文件为 `.nebula`，不是简单更换 JSON 后缀：
+数据目录保持不变，不随仓库名、程序位置或 CPU 架构改变。应用只读写 `.nebula` 笔记库；其内容是认证二进制封装，不能通过改名把 JSON 转成 `.nebula`：
 
 - Linux：`${XDG_DATA_HOME:-$HOME/.local/share}/nebulanotepad/notebook.nebula`（`XDG_DATA_HOME` 应为绝对路径）
 - Windows：通常是 `%LOCALAPPDATA%\Nebula\Nebula Notepad\data\notebook.nebula`
 - 以窗口底部“数据文件”悬停显示的实际路径为准
 
-`.nebula` 使用 XChaCha20-Poly1305、每次新编码的系统随机 nonce、认证版本头和完整性校验，提供**免密码的轻量混淆与误改检测**。兼容密钥随开源应用公开，任何能读取源码/程序的人都能解密或重新生成有效文件；**这不是密码保护、可靠保密或对抗有意篡改的数字签名**。没有密码弹窗，也不依赖本机密钥库，所以备份可在其他设备导入。敏感笔记应配合系统磁盘加密。协议与限制见 [NEBULA_FORMAT.md](NEBULA_FORMAT.md)。
+`.nebula` 使用 XChaCha20-Poly1305、每次新编码的系统随机 nonce、认证版本头和完整性校验，提供**免密码的轻量混淆与误改检测**。格式密钥随开源应用公开，任何能读取源码/程序的人都能解密或重新生成有效文件；**这不是密码保护、可靠保密或对抗有意篡改的数字签名**。没有密码弹窗，也不依赖本机密钥库，所以备份可在其他设备导入。敏感笔记应配合系统磁盘加密。协议与限制见 [NEBULA_FORMAT.md](NEBULA_FORMAT.md)。
 
-主文件 `notebook.nebula`、上一份成功快照 `notebook.backup.nebula`、初始迁移恢复快照 `notebook.migration.nebula`（仅迁移时生成）位于同一目录。实例锁继续使用 `notebook.json.lock`，与旧版共用，防止新旧版本同时写入。进程退出后操作系统释放锁；锁文件存在不代表仍被占用，不要在运行时删除它。
+主文件 `notebook.nebula`、上一份成功快照 `notebook.backup.nebula` 位于同一目录。实例锁的固定文件名仍为 `notebook.json.lock`，保证使用同一笔记库的先前 `.nebula` 构建也遵守同一个排他锁；锁文件不是 JSON 笔记库。进程退出后操作系统释放锁；锁文件存在不代表仍被占用，不要在运行时删除它。
 
 Linux 新建目录 0700，主文件、备份、锁和导出文件 0600；已有目录权限不修改。Windows 继承当前用户目录 ACL。
 
-1. 定期用“导入 / 导出”导出完整 `.nebula` 备份到其他安全位置。TXT、Markdown 和显式 JSON 导出为明文。
+1. 定期用“导入 / 导出”导出完整 `.nebula` 备份到其他安全位置。TXT / Markdown 为明文，只包含所选笔记正文，不能替代完整备份。
 2. 复制或恢复数据前关闭所有新旧版本。导出不会覆盖已有文件，请选择新名称。
-3. 主文件损坏时，先保留/重命名损坏文件，再将已确认完好的 `notebook.backup.nebula` 复制为 `notebook.nebula` 后重开。迁移阶段中断可使用 `notebook.migration.nebula`；它仅包含迁移时内容，可能比上一快照更旧。
-4. 主文件缺失但发现新格式恢复备份时停止并提示，绝不静默回退到陈旧 JSON。错误头、未知格式/数据版本、损坏 nonce、认证失败、截断或多余字节均拒绝读取。
+3. 主文件损坏时，先保留/重命名损坏文件，再将已确认完好的 `notebook.backup.nebula` 复制为 `notebook.nebula` 后重开。先前构建留下的 `notebook.migration.nebula` 也可作为恢复候选；它仅含当时的快照，可能较旧，当前程序不会新建它。
+4. 主文件缺失但发现任一上述 `.nebula` 恢复快照时停止并提示，不创建空白笔记库。错误头、未知格式/数据版本、损坏 nonce、认证失败、截断或多余字节均拒绝读取。
 5. 保存失败时保留当前编辑，先导出含草稿的备份，再处理磁盘已满、权限、外部修改等错误。不要强制结束进程。
 
-建议用支持硬链接及原子替换的本地文件系统（例如 ext4、NTFS）。首次保存和迁移以同目录已同步临时文件的硬链接原子发布，避免覆盖竞争中出现的文件；不支持硬链接的 FAT/exFAT 或受限文件系统会明确报错并保留原数据。NFS、同步盘或异常文件系统的锁/替换语义可能不同，不承诺跨设备同时编辑或所有掉电场景安全。上一份快照不能替代独立长期备份。
+建议用支持硬链接及原子替换的本地文件系统（例如 ext4、NTFS）。首次保存以同目录已同步临时文件的硬链接原子发布，避免覆盖竞争中出现的文件；不支持硬链接的 FAT/exFAT 或受限文件系统会明确报错并保留原数据。NFS、同步盘或异常文件系统的锁/替换语义可能不同，不承诺跨设备同时编辑或所有掉电场景安全。上一份快照不能替代独立长期备份。
 
-### 从原生 4.0 / 4.1 JSON 迁移
+### 支持的数据格式与升级边界
 
-关闭旧程序后运行新版，会在原数据目录完整验证 `notebook.json`，保留其**原始字节和旧 `.json.bak`**，先生成可恢复的 `.nebula` 迁移快照，再原子创建新主文件。笔记 ID、内容、回收站、文件夹、标签、原始 HTML 和已支持的旧元数据均保留；未知字段/不支持版本不会被丢弃或强行迁移。旧 JSON 损坏时停止，不能创建空库掩盖问题。
+当前版本不再自动读取或迁移 `notebook.json`，不提供 JSON / Dexie 导入、明文 JSON 导出或旧浏览器导出脚本。旧 JSON 和 `.json.bak` 不会被读取、修改或删除，也不参与 `.nebula` 的打开/保存冲突检查。若目录只有这些旧文件而没有 `.nebula` 主文件或恢复快照，程序会打开新的空白笔记库，首次保存时创建 `notebook.nebula`。因此，仅有旧 JSON 的用户应先保留原程序与数据，并在原程序中将所需笔记导出为 TXT / Markdown 等受支持格式后再导入；此方式不能完整保留 ID、日期、回收站和其他元数据。
 
-新格式主文件存在时优先读取它。迁移后的旧 JSON 带有经过认证的原始 SHA-256 记录：若降级版或其他工具改写旧 JSON，新版会停止打开/保存，避免覆盖任一版本。关闭所有版本并分别备份，再将旧 JSON 移到其他目录、重开新版并按需显式导入。用户自行删除或迁走旧 JSON 不会锁死新库；不同内容重新出现时仍会提示冲突。旧 JSON 和旧备份仍是明文，不会自动删除；请核对新备份可恢复后自行决定如何保管。
+已有 `.nebula` v1 笔记库仍可直接打开；其中的原始 HTML、文件夹、标签和旧元数据作为非执行数据保留。历史迁移关联字段不再触发旧 JSON 读取或冲突判断。跨设备使用完整 `.nebula` 备份；导入默认生成新 ID 副本，重复导入会增加副本。
 
-跨设备推荐导出/导入完整 `.nebula` 备份。导出不附带本机旧文件的迁移关联，导入默认生成新 ID 副本；重复导入会增加副本。需要旧版兼容时，选择明确标为明文的 JSON 导出，而不要让旧版继续编辑已迁移目录。
-
-### 从旧浏览器版迁移
-
-不要先清除浏览器数据或卸载旧版。
-
-1. 在原来的浏览器、原来的站点地址打开旧 Nebula。
-2. 审阅 [`scripts/export-legacy-data.js`](scripts/export-legacy-data.js)，在该页面开发者工具 Console 中运行。它仅在只读事务中导出 `NebulaLocalDB`，不修改/删除数据。
-3. 在原生程序选择“导入”，选中下载的 JSON。
-4. 核对标题、正文、数量及回收站，再导出一份完整 .nebula 备份。
-5. 确认备份可恢复后，自行决定是否清理旧数据。
-
-也可导入旧 HTML/TXT/Markdown。HTML 转文本可能改变排版，原始 HTML 会保留。原生程序不能自动读取浏览器 IndexedDB，也不连接旧 PostgreSQL；服务端数据须先由旧系统导出。
+HTML 导入会转成可编辑文本并保留原文，但排版可能改变。TXT / Markdown 按纯文本导入。程序不连接浏览器 IndexedDB 或旧服务端数据库。
 
 ## 故障排查
 
@@ -134,7 +122,7 @@ Linux 新建目录 0700，主文件、备份、锁和导出文件 0600；已有�
 - Wayland 问题：若系统提供 XWayland，可临时 `env -u WAYLAND_DISPLAY ./nebulabook` 切换 X11 路径；这不是无桌面模式。
 - 虚拟机显卡/OpenGL 问题：先修复系统驱动；Mesa 环境可尝试 `LIBGL_ALWAYS_SOFTWARE=1 ./nebulabook`。
 - 文件选择器无响应/取消：检查 D-Bus 和 desktop portal，或使用应用内手动路径入口。填写完整路径，不会自动展开 shell 命令。
-- 数据被占用：关闭另一个使用同一数据目录的窗口后重试。新仓库版与旧原生版也会互斥。
+- 数据被占用：关闭另一个使用同一数据目录的窗口后重试。锁文件名保持稳定，包括先前 `.nebula` 构建在内的实例使用同一个锁。
 - 字体方框：安装中文字体后重启。字体和输入法是两个独立环节。
 
 需要诊断时可显式指定一个尚不存在的日志文件；日志记录版本、平台、渲染器和引擎错误，不读取笔记内容。已有日志不会覆盖：
@@ -143,7 +131,7 @@ Linux 新建目录 0700，主文件、备份、锁和导出文件 0600；已有�
 NEBULABOOK_STARTUP_LOG="$HOME/nebulabook-startup.log" ./nebulabook
 ```
 
-报告问题请附系统/架构、版本、图形会话、报错以及校验结果；不要公开私人笔记。无交互检查可设 `NEBULABOOK_NO_ERROR_DIALOG=1`，它只禁止错误对话框，不自动修复启动错误。为兼容旧启动配置，仍接受 `NEBULA_STARTUP_LOG`、`NEBULA_NO_ERROR_DIALOG` 和 `NEBULA_REQUIRE_CJK_FONT`；同名后缀的 `NEBULABOOK_` 配置优先。
+报告问题请附系统/架构、版本、图形会话、报错以及校验结果；不要公开私人笔记。无交互检查可设 `NEBULABOOK_NO_ERROR_DIALOG=1`，它只禁止错误对话框，不自动修复启动错误。诊断和测试配置只接受 `NEBULABOOK_` 前缀；使用旧 `NEBULA_` 前缀的启动脚本需要更新。
 
 ## 从源码构建
 
@@ -165,10 +153,9 @@ cargo fmt --all -- --check
 cargo test --locked --all-targets
 cargo clippy --locked -p nebulabook --no-deps --all-targets -- -D warnings
 cargo test --locked --no-default-features
-node --test tests/legacy-export.test.cjs
 ```
 
-Node 18+ 仅用于旧数据导出脚本的开发测试，不是应用运行依赖。Linux 打包/GUI 检查、发行边界见 [LOCAL_CI.md](LOCAL_CI.md)，实现见 [ARCHITECTURE.md](ARCHITECTURE.md)，验证范围见 [AUDIT.md](AUDIT.md)。
+开发检查不再需要 Node；Python 用于独立格式读取器、Linux 烟测及打包/发行校验，应用运行不依赖 Python。Linux 打包/GUI 检查、发行边界见 [LOCAL_CI.md](LOCAL_CI.md)，实现见 [ARCHITECTURE.md](ARCHITECTURE.md)，验证范围见 [AUDIT.md](AUDIT.md)。
 
 ## CI 与发布
 
@@ -182,7 +169,7 @@ Node 18+ 仅用于旧数据导出脚本的开发测试，不是应用运行依�
 - `src/model.rs`：版本化模型和校验
 - `src/storage.rs`：文件锁、原子保存、备份
 - `src/import_export.rs`：非破坏式导入导出
-- `scripts/`：旧数据导出、Linux 验证/打包/安装
+- `scripts/`：格式测试、Linux 验证/打包/安装及发行校验
 - `.github/workflows/ci.yml`：跨平台检查与受限发布
 
 MIT，见 [LICENSE](LICENSE)。保留原项目版权声明，第三方 crate 使用各自许可；系统库和字体由系统供应方提供。原项目历史：[note-system](https://github.com/Tran314/note-system)，原生重构首发：[v4.0.0](https://github.com/Tran314/note-system/releases/tag/v4.0.0)。

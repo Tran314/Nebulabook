@@ -8,10 +8,9 @@ cargo test --locked --all-targets
 cargo test --locked --no-default-features
 cargo clippy --locked -p nebulabook --no-deps --all-targets -- -D warnings
 cargo build --locked --release
-node --test tests/legacy-export.test.cjs
 ```
 
-Node 18+ 仅用于开发检查。设置 `NEBULABOOK_REQUIRE_CJK_FONT=1` 可让字体单测在无系统中文字体时失败，而非跳过。正常程序不依赖 Node 或 Python。
+开发检查不再需要 Node。Python 用于格式读取器、Linux 烟测和打包/发行校验。设置 `NEBULABOOK_REQUIRE_CJK_FONT=1` 可让字体单测在无系统中文字体时失败，而非跳过。正常程序不依赖 Node 或 Python。
 
 ## Linux 真实虚拟桌面检查
 

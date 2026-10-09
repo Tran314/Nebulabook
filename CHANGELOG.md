@@ -1,5 +1,7 @@
 # 更新日志
 
+以下为已发布版本的历史记录，不代表当前 main 的全部能力。当前 main 只读写 `.nebula` 笔记库，已移除旧 JSON / 浏览器兼容流程；见 [README](README.md)。
+
 ## 4.1.0 · Linux 桌面适配与独立仓库
 
 - 项目及应用统一更名为 Nebulabook，Rust 包/可执行文件为 `nebulabook`，保留旧数据目录和格式以直接使用原笔记。

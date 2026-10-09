@@ -1,6 +1,6 @@
 //! Portable, password-free obfuscation, NOT confidentiality or an attacker-proof signature.
 //!
-//! The compatibility key is deliberately public. Anyone with this source can
+//! The format key is deliberately public. Anyone with this source can
 //! decrypt or produce a valid file. See NEBULA_FORMAT.md for the exact protocol.
 use crate::model::Notebook;
 use chacha20poly1305::{
@@ -15,14 +15,15 @@ pub const HEADER_BYTES: usize = 44;
 pub const TAG_BYTES: usize = 16;
 pub const MAX_PAYLOAD_BYTES: u64 = 64 * 1024 * 1024;
 pub const MAX_FILE_BYTES: u64 = MAX_PAYLOAD_BYTES + HEADER_BYTES as u64 + TAG_BYTES as u64;
-const PUBLIC_COMPATIBILITY_KEY: &[u8; 32] = b"Nebulabook public format key v1!";
+const PUBLIC_FORMAT_KEY: &[u8; 32] = b"Nebulabook public format key v1!";
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct Snapshot {
-    pub notebook: Notebook,
+struct Snapshot {
+    notebook: Notebook,
     #[serde(deserialize_with = "required_source_digest")]
-    pub legacy_source_sha256: Option<String>,
+    // Reserved v1 envelope field; accepted but never used to access another file.
+    legacy_source_sha256: Option<String>,
 }
 
 fn required_source_digest<'de, D: serde::Deserializer<'de>>(
@@ -36,32 +37,16 @@ pub(crate) fn digest(bytes: &[u8]) -> String {
     digest.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
-/// Portable exports contain no link to another computer's migration source.
+/// Encode the current native format with an independent random nonce.
 pub fn encode(notebook: &Notebook) -> Result<Vec<u8>, String> {
-    encode_snapshot(notebook, None)
-}
-
-pub fn decode(bytes: &[u8]) -> Result<Notebook, String> {
-    Ok(decode_snapshot(bytes)?.notebook)
-}
-
-pub(crate) fn encode_snapshot(
-    notebook: &Notebook,
-    legacy_source_sha256: Option<&str>,
-) -> Result<Vec<u8>, String> {
     let mut nonce = [0_u8; 24];
     getrandom::fill(&mut nonce)
         .map_err(|error| format!("无法获取系统安全随机数，未保存：{error}"))?;
-    encode_with_nonce(notebook, legacy_source_sha256, nonce)
+    encode_with_nonce(notebook, nonce)
 }
 
-fn encode_with_nonce(
-    notebook: &Notebook,
-    legacy_source_sha256: Option<&str>,
-    nonce: [u8; 24],
-) -> Result<Vec<u8>, String> {
+fn encode_with_nonce(notebook: &Notebook, nonce: [u8; 24]) -> Result<Vec<u8>, String> {
     notebook.validate()?;
-    validate_source_digest(legacy_source_sha256)?;
     // Serialize borrowed data rather than cloning an entire notebook.
     #[derive(Serialize)]
     struct PayloadRef<'a> {
@@ -70,7 +55,7 @@ fn encode_with_nonce(
     }
     let plaintext = serde_json::to_vec(&PayloadRef {
         notebook,
-        legacy_source_sha256,
+        legacy_source_sha256: None,
     })
     .map_err(|error| format!("无法编码 .nebula 数据：{error}"))?;
     if plaintext.len() as u64 > MAX_PAYLOAD_BYTES {
@@ -82,7 +67,7 @@ fn encode_with_nonce(
     header.extend_from_slice(&0_u16.to_le_bytes());
     header.extend_from_slice(&nonce);
     header.extend_from_slice(&((plaintext.len() + TAG_BYTES) as u64).to_le_bytes());
-    let cipher = XChaCha20Poly1305::new(PUBLIC_COMPATIBILITY_KEY.into());
+    let cipher = XChaCha20Poly1305::new(PUBLIC_FORMAT_KEY.into());
     let ciphertext = cipher
         .encrypt(
             &XNonce::from(nonce),
@@ -96,7 +81,7 @@ fn encode_with_nonce(
     Ok(header)
 }
 
-pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, String> {
+pub fn decode(bytes: &[u8]) -> Result<Notebook, String> {
     if bytes.len() as u64 > MAX_FILE_BYTES {
         return Err(".nebula 文件超过 64 MiB 载荷安全上限。".into());
     }
@@ -120,7 +105,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, String> {
         return Err(".nebula 长度校验失败；文件可能损坏、截断或被修改。".into());
     }
     let nonce: [u8; 24] = bytes[12..36].try_into().unwrap();
-    let cipher = XChaCha20Poly1305::new(PUBLIC_COMPATIBILITY_KEY.into());
+    let cipher = XChaCha20Poly1305::new(PUBLIC_FORMAT_KEY.into());
     let plaintext = cipher
         .decrypt(
             &XNonce::from(nonce),
@@ -137,7 +122,7 @@ pub(crate) fn decode_snapshot(bytes: &[u8]) -> Result<Snapshot, String> {
         .map_err(|error| format!("无效的 .nebula 数据结构：{error}"))?;
     validate_source_digest(snapshot.legacy_source_sha256.as_deref())?;
     snapshot.notebook.validate()?;
-    Ok(snapshot)
+    Ok(snapshot.notebook)
 }
 
 fn validate_source_digest(value: Option<&str>) -> Result<(), String> {
@@ -197,12 +182,75 @@ mod tests {
     fn deterministic_fixture_matches_public_protocol() {
         let bytes = encode_with_nonce(
             &Notebook::default(),
-            None,
             std::array::from_fn(|index| index as u8),
         )
         .unwrap();
         assert_eq!(bytes, include_bytes!("../tests/fixtures/empty-v1.nebula"));
         assert_eq!(decode(&bytes).unwrap(), Notebook::default());
+    }
+
+    fn seal_payload(raw: &str) -> Vec<u8> {
+        let nonce = [7_u8; 24];
+        let mut header = MAGIC.to_vec();
+        header.extend_from_slice(&1_u16.to_le_bytes());
+        header.extend_from_slice(&0_u16.to_le_bytes());
+        header.extend_from_slice(&nonce);
+        header.extend_from_slice(&((raw.len() + TAG_BYTES) as u64).to_le_bytes());
+        let cipher = XChaCha20Poly1305::new(PUBLIC_FORMAT_KEY.into());
+        let ciphertext = cipher
+            .encrypt(
+                &XNonce::from(nonce),
+                Payload {
+                    msg: raw.as_bytes(),
+                    aad: &header,
+                },
+            )
+            .unwrap();
+        header.extend_from_slice(&ciphertext);
+        header
+    }
+
+    #[test]
+    fn existing_v1_source_field_is_inert_and_new_saves_use_null() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("notebook.nebula");
+        let old_json = path.with_extension("json");
+        std::fs::write(&old_json, b"unrelated old JSON").unwrap();
+        let notebook = Notebook {
+            legacy_archives: vec![serde_json::json!({"preserved": "inert native metadata"})],
+            ..Notebook::default()
+        };
+        let raw = serde_json::json!({
+            "notebook": notebook,
+            "legacy_source_sha256": "a".repeat(64),
+        })
+        .to_string();
+        let previous = seal_payload(&raw);
+        std::fs::write(&path, &previous).unwrap();
+        let (mut storage, mut loaded) = crate::storage::Storage::open(path.clone()).unwrap();
+        assert_eq!(loaded, notebook);
+        storage.save(&loaded).unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), previous);
+        loaded
+            .notes
+            .push(Note::new("Current note".into(), "New content".into()));
+        storage.save(&loaded).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(decode(&saved).unwrap(), loaded);
+        let nonce: [u8; 24] = saved[12..36].try_into().unwrap();
+        let plaintext = XChaCha20Poly1305::new(PUBLIC_FORMAT_KEY.into())
+            .decrypt(
+                &XNonce::from(nonce),
+                Payload {
+                    msg: &saved[HEADER_BYTES..],
+                    aad: &saved[..HEADER_BYTES],
+                },
+            )
+            .unwrap();
+        let envelope: serde_json::Value = serde_json::from_slice(&plaintext).unwrap();
+        assert!(envelope["legacy_source_sha256"].is_null());
+        assert_eq!(std::fs::read(&old_json).unwrap(), b"unrelated old JSON");
+        assert_eq!(std::fs::read(storage.backup_path()).unwrap(), previous);
     }
 
     #[test]
@@ -215,14 +263,7 @@ mod tests {
             r#"{"notebook":{"schema_version":99,"notes":[],"folders":[],"tags":[]},"legacy_source_sha256":null}"#.into(),
             r#"{"notebook":{"schema_version":1,"notes":[],"notes":[],"folders":[],"tags":[]},"legacy_source_sha256":null}"#.into(),
         ] {
-            let nonce = [7_u8; 24];
-            let mut header = MAGIC.to_vec();
-            header.extend_from_slice(&1_u16.to_le_bytes()); header.extend_from_slice(&0_u16.to_le_bytes());
-            header.extend_from_slice(&nonce); header.extend_from_slice(&((raw.len() + TAG_BYTES) as u64).to_le_bytes());
-            let cipher = XChaCha20Poly1305::new(PUBLIC_COMPATIBILITY_KEY.into());
-            let ciphertext = cipher.encrypt(&XNonce::from(nonce), Payload { msg: raw.as_bytes(), aad: &header }).unwrap();
-            header.extend_from_slice(&ciphertext);
-            assert!(decode(&header).is_err(), "accepted invalid authenticated payload: {raw}");
+            assert!(decode(&seal_payload(&raw)).is_err(), "accepted invalid authenticated payload: {raw}");
         }
     }
 }

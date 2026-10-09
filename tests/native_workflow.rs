@@ -1,30 +1,28 @@
 use nebulabook::import_export::{export_backup, import_bytes, import_file, ImportMode};
 use nebulabook::model::Notebook;
+use nebulabook::nebula_format;
 use nebulabook::storage::Storage;
 
 #[test]
-fn legacy_migration_edit_trash_backup_and_reopen_are_non_destructive() {
+fn native_import_edit_trash_backup_and_reopen_are_non_destructive() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("notebook.nebula");
-    let legacy = serde_json::json!({
-        "notes": [{
-            "id": "old-note", "userId": "anonymous-user", "folderId": null,
-            "title": "旧笔记", "content": "<h1>重要内容</h1><script>alert('never run')</script><p>第二行</p>",
-            "isPinned": true, "isDeleted": false, "deletedAt": null,
-            "version": 4, "createdAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-01-02T00:00:00Z",
-            "tags": [], "syncedAt": null
-        }], "folders": [], "tags": [], "settings": []
-    });
-    let (mut storage, mut notebook) = Storage::open(path.clone()).unwrap();
-    let report = import_bytes(
-        "old.json",
-        legacy.to_string().as_bytes(),
-        &mut notebook,
+    let mut source = Notebook::default();
+    import_bytes(
+        "原始笔记.html",
+        "<h1>重要内容</h1><script>alert('never run')</script><p>第二行</p>".as_bytes(),
+        &mut source,
         ImportMode::Copy,
     )
     .unwrap();
+    let source_id = source.notes[0].id.clone();
+    source.notes[0].set_pinned(true);
+    let native = nebula_format::encode(&source).unwrap();
+    let (mut storage, mut notebook) = Storage::open(path.clone()).unwrap();
+    let report = import_bytes("source.nebula", &native, &mut notebook, ImportMode::Copy).unwrap();
     assert_eq!(report.added, 1);
-    assert_ne!(notebook.notes[0].id, "old-note");
+    assert_ne!(notebook.notes[0].id, source_id);
+    assert!(notebook.notes[0].is_pinned);
     assert!(notebook.notes[0].content.contains("重要内容"));
     assert!(!notebook.notes[0].content.contains("never run"));
     assert!(notebook.notes[0]
@@ -61,13 +59,9 @@ fn a_failed_import_and_duplicate_import_cannot_replace_current_content() {
     let mut notebook = Notebook::default();
     import_bytes("same.txt", b"original", &mut notebook, ImportMode::Copy).unwrap();
     let original = notebook.clone();
-    assert!(import_bytes(
-        "bad.json",
-        b"{\"schema_version\":99}",
-        &mut notebook,
-        ImportMode::Copy
-    )
-    .is_err());
+    let mut corrupt = nebula_format::encode(&original).unwrap();
+    *corrupt.last_mut().unwrap() ^= 1;
+    assert!(import_bytes("bad.nebula", &corrupt, &mut notebook, ImportMode::Copy).is_err());
     assert_eq!(notebook, original);
     import_bytes("same.txt", b"new copy", &mut notebook, ImportMode::Copy).unwrap();
     assert_eq!(notebook.notes.len(), 2);

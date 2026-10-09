@@ -2,12 +2,14 @@
 """Synthetic, Chinese-language notebook data for real-display smoke screenshots.
 
 No production behavior or personal notebooks are used. This helper only creates
-legacy schema-1 input inside the smoke runner's disposable XDG_DATA_HOME. The
-real app must open/migrate it through its normal storage path. Its self-tests
-check the fixture, not the GUI or production storage implementation.
+authenticated .nebula v1 input for visual scenarios inside the smoke runner's
+disposable XDG_DATA_HOME. These inputs are not evidence of a GUI save: separate
+keyboard editing workflows verify actual application writes with the independent
+reader. Self-tests check the fixture protocol, not the GUI implementation.
 """
 import hmac
 import json
+import os
 import struct
 from pathlib import Path
 import unittest
@@ -61,19 +63,22 @@ def notebook(empty=False):
     return {"schema_version": 1, "notes": notes, "folders": [], "tags": []}
 
 
-def seed_legacy(data_home, *, empty=False):
-    """Called only while that scenario's app is stopped; never overwrite input."""
+def seed_nebula(data_home, *, empty=False):
+    """Initialize visual input only while the app is stopped; never overwrite it."""
     folder = Path(data_home) / "nebulanotepad"
     folder.mkdir(mode=0o700, parents=True)
-    path = folder / "notebook.json"
-    with path.open("x", encoding="utf-8") as handle:
-        json.dump(notebook(empty), handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-    path.chmod(0o600)
+    path = folder / "notebook.nebula"
+    encoded = encode_nebula(notebook(empty))
+    # Set private permissions when creating, not after writing the data.
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(encoded)
     return path
 
 
-# Independent test-only reader: production uses RustCrypto, never this code.
+# Independent test-only codec: production uses RustCrypto, never this code.
+# Both directions are checked against published vectors and the shared fixture,
+# so matching Python encode/decode bugs cannot establish format compatibility.
 # Algorithm definitions / known-answer vectors:
 # https://www.rfc-editor.org/rfc/rfc8439 (2.3.2, 2.5.2, 2.8)
 # https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-xchacha-03 (2.2.1)
@@ -139,6 +144,36 @@ def _decrypt_xchacha(key, nonce, aad, ciphertext, tag):
         key_stream = _chacha_block(subkey, offset // 64 + 1, short_nonce)
         plain.extend(a ^ b for a, b in zip(ciphertext[offset:offset + 64], key_stream))
     return bytes(plain)
+
+
+def _encrypt_xchacha(key, nonce, aad, plaintext):
+    """Only prepare synthetic visual inputs, never application-save evidence."""
+    subkey = _hchacha(key, nonce[:16])
+    short_nonce = b"\0" * 4 + nonce[16:]
+    ciphertext = bytearray()
+    for offset in range(0, len(plaintext), 64):
+        key_stream = _chacha_block(subkey, offset // 64 + 1, short_nonce)
+        ciphertext.extend(a ^ b for a, b in zip(plaintext[offset:offset + 64], key_stream))
+    ciphertext = bytes(ciphertext)
+    poly_key = _chacha_block(subkey, 0, short_nonce)[:32]
+    authenticated = (aad + b"\0" * (-len(aad) % 16)
+                     + ciphertext + b"\0" * (-len(ciphertext) % 16)
+                     + struct.pack("<QQ", len(aad), len(ciphertext)))
+    return ciphertext, _poly1305(authenticated, poly_key)
+
+
+def encode_nebula(data, *, nonce=None):
+    """Encode current v1 fixtures with the existing, explicit null source field."""
+    nonce = os.urandom(24) if nonce is None else nonce
+    if len(nonce) != 24:
+        raise ValueError("A .nebula nonce must contain 24 bytes")
+    plaintext = json.dumps({"notebook": data, "legacy_source_sha256": None},
+                           ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if len(plaintext) + HEADER_SIZE + 16 > 1024 * 1024:
+        raise ValueError("Disposable smoke notebook unexpectedly exceeds 1 MiB")
+    header = MAGIC + struct.pack("<HH", 1, 0) + nonce + struct.pack("<Q", len(plaintext) + 16)
+    ciphertext, tag = _encrypt_xchacha(FORMAT_KEY, nonce, header, plaintext)
+    return header + ciphertext + tag
 
 
 def decode_nebula(encoded):
@@ -208,6 +243,7 @@ class DecoderTests(unittest.TestCase):
             "6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73"
             "637265656e20776f756c642062652069742e")
         self.assertEqual(_decrypt_xchacha(key, nonce, aad, ciphertext, tag), expected)
+        self.assertEqual(_encrypt_xchacha(key, nonce, aad, expected), (ciphertext, tag))
         for corrupted in ((key, nonce, aad + b"x", ciphertext, tag),
                           (key, nonce, aad, ciphertext[:-1] + b"x", tag),
                           (key, nonce, aad, ciphertext, bytes(16))):
@@ -219,6 +255,7 @@ class DecoderTests(unittest.TestCase):
         encoded = fixture.read_bytes()
         self.assertEqual(len(encoded), 155)
         self.assertEqual(encoded[12:36], bytes(range(24)))
+        self.assertEqual(encode_nebula(notebook(empty=True), nonce=bytes(range(24))), encoded)
         self.assertEqual(decode_nebula(encoded), notebook(empty=True))
         for index in (0, 8, 10, 12, 36, 44, len(encoded) - 1):
             changed = bytearray(encoded)
@@ -269,14 +306,35 @@ class FixtureTests(unittest.TestCase):
     def test_private_seed_never_overwrites(self):
         import tempfile
         with tempfile.TemporaryDirectory() as temporary:
-            path = seed_legacy(temporary)
-            self.assertEqual(json.loads(path.read_text(encoding="utf-8")), notebook())
+            path = seed_nebula(temporary)
+            self.assertEqual(path.name, "notebook.nebula")
+            self.assertEqual(read_notebook(path, isolated_root=temporary), notebook())
+            self.assertFalse(path.with_suffix(".json").exists())
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
             self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
             before = path.read_bytes()
             with self.assertRaises(FileExistsError):
-                seed_legacy(temporary, empty=True)
+                seed_nebula(temporary, empty=True)
             self.assertEqual(path.read_bytes(), before)
+
+    def test_native_fixture_shape_null_source_and_fresh_nonce(self):
+        for empty in (False, True):
+            expected = notebook(empty)
+            first, second = encode_nebula(expected), encode_nebula(expected)
+            self.assertNotEqual(first[12:36], second[12:36])
+            self.assertEqual(decode_nebula(first), expected)
+            self.assertEqual(decode_nebula(second), expected)
+            plain = _decrypt_xchacha(FORMAT_KEY, first[12:36], first[:44],
+                                    first[44:-16], first[-16:])
+            self.assertEqual(json.loads(plain), {"notebook": expected, "legacy_source_sha256": None})
+            self.assertNotIn(DEMO_TITLE.encode("utf-8"), first)
+
+    def test_writer_rejects_invalid_nonce_and_oversized_input(self):
+        for nonce in (b"", bytes(23), bytes(25)):
+            with self.subTest(nonce_length=len(nonce)), self.assertRaises(ValueError):
+                encode_nebula(notebook(), nonce=nonce)
+        with self.assertRaisesRegex(ValueError, "exceeds 1 MiB"):
+            encode_nebula({"synthetic_oversized_value": "x" * 1024 * 1024})
 
 
 if __name__ == "__main__":

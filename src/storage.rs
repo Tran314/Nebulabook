@@ -9,8 +9,6 @@ use std::path::{Path, PathBuf};
 #[cfg(test)]
 use uuid::Uuid;
 
-pub const MAX_NOTEBOOK_BYTES: u64 = 64 * 1024 * 1024;
-
 #[derive(Debug)]
 pub enum StorageError {
     Io {
@@ -28,7 +26,6 @@ pub enum StorageError {
         backup: PathBuf,
     },
     Conflict(PathBuf),
-    LegacyConflict(PathBuf),
     TooLarge(PathBuf),
     NoDataDirectory,
 }
@@ -37,11 +34,10 @@ impl fmt::Display for StorageError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io { operation, path, source } => write!(f, "{operation}失败（{}）：{source}", path.display()),
-            Self::InvalidData { path, message } => write!(f, "无法读取或保存 {}：{message} 原文件未被覆盖。若需恢复，请先关闭程序，保留或重命名损坏的主文件，再将已确认完好的备份 {} 复制为 {}，然后重新打开程序或重试。首次迁移时也可检查恢复快照 {}（仅包含迁移时内容）。", path.display(), backup_path(path).display(), path.display(), migration_backup_path(path).display()),
+            Self::InvalidData { path, message } => write!(f, "无法读取或保存 {}：{message} 原文件未被覆盖。若需恢复，请先关闭程序，保留或重命名损坏的主文件，再将已确认完好的备份 {} 复制为 {}，然后重新打开程序或重试。", path.display(), backup_path(path).display(), path.display()),
             Self::RecoveryAvailable { path, backup } => write!(f, "主数据文件 {} 不存在，但发现备份 {}。未创建空白数据；请先复制备份为主数据文件，再重新打开程序。", path.display(), backup.display()),
             Self::Locked(path) => write!(f, "数据文件已被另一实例使用：{}。请关闭另一个记事本窗口后重试。", path.display()),
             Self::Conflict(path) => write!(f, "数据文件已被外部修改：{}。为避免覆盖，保存已停止。请先导出当前笔记，再重新打开程序。", path.display()),
-            Self::LegacyConflict(path) => write!(f, "旧 JSON 数据已在迁移后新增或修改：{}。可能是旧版程序写入。为避免丢失任一版本，打开或保存已停止；请关闭所有版本，分别保留 .nebula 与 JSON，将 JSON 移到其他目录后重开，再按需显式导入合并。原文件未被覆盖。", path.display()),
             Self::TooLarge(path) => write!(f, "数据文件超过 64 MiB 安全上限：{}。原文件未被覆盖。", path.display()),
             Self::NoDataDirectory => write!(f, "无法确定本机用户数据目录。"),
         }
@@ -65,13 +61,11 @@ pub struct Storage {
     _lock: File,
     current_bytes: Option<Vec<u8>>,
     current_notebook_digest: Option<String>,
-    legacy_path: PathBuf,
-    legacy_source_sha256: Option<String>,
 }
 
 impl Storage {
     pub fn open_default() -> Result<(Self, Notebook), StorageError> {
-        // Stable legacy identity: branding/bin/repository changes must never
+        // Stable application identity: branding/bin/repository changes must never
         // move or hide an existing notebook, backup or instance lock.
         let directories = ProjectDirs::from("com", "Nebula", "Nebula Notepad")
             .ok_or(StorageError::NoDataDirectory)?;
@@ -87,25 +81,16 @@ impl Storage {
                 .map_err(|error| io_error("读取工作目录", &path, error))?
                 .join(path)
         };
-        // Calls using the legacy path also migrate to the sibling native file.
-        let path = if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-        {
-            path.with_extension("nebula")
-        } else {
-            path
-        };
         if path
             .extension()
             .is_none_or(|extension| extension != "nebula")
         {
             return Err(StorageError::InvalidData {
                 path,
-                message: "本机数据文件必须使用小写 .nebula 后缀（旧数据使用小写 .json）；其他文件请显式导入。".into(),
+                message: "本机数据文件必须使用小写 .nebula 后缀；其他支持的文本文件请显式导入。"
+                    .into(),
             });
         }
-        let legacy_path = path.with_extension("json");
         let parent = path.parent().ok_or_else(|| StorageError::InvalidData {
             path: path.clone(),
             message: "数据文件路径无效。".into(),
@@ -122,9 +107,9 @@ impl Storage {
         builder
             .create(parent)
             .map_err(|error| io_error("创建数据目录", parent, error))?;
-        // Share the original lock even when no old JSON exists. Older app
-        // versions must not run concurrently with the new storage writer.
-        let lock_path = sibling_with_suffix(&legacy_path, ".lock");
+        // Keep the established lock filename so every current-format writer
+        // coordinates on the same operating-system lock. No JSON is read.
+        let lock_path = path.with_extension("json.lock");
         let lock = private_options()
             .read(true)
             .write(true)
@@ -139,22 +124,18 @@ impl Storage {
                 io_error("锁定数据文件", &lock_path, error)
             }
         })?;
-        let mut current_bytes = read_optional(&path)?;
-        let (notebook, legacy_source_sha256) = match &current_bytes {
+        let current_bytes = read_optional(&path)?;
+        let notebook = match &current_bytes {
             Some(bytes) => {
-                let snapshot = nebula_format::decode_snapshot(bytes).map_err(|message| {
-                    StorageError::InvalidData {
-                        path: path.clone(),
-                        message,
-                    }
-                })?;
-                verify_legacy_source(&legacy_path, snapshot.legacy_source_sha256.as_deref())?;
-                (snapshot.notebook, snapshot.legacy_source_sha256)
+                nebula_format::decode(bytes).map_err(|message| StorageError::InvalidData {
+                    path: path.clone(),
+                    message,
+                })?
             }
             None => {
-                // Never select stale legacy data after a missing primary or an
-                // interrupted migration: recovery must be explicit.
-                for backup in [backup_path(&path), migration_backup_path(&path)] {
+                // Existing native recovery data must never be hidden by a new
+                // empty notebook, including snapshots made by earlier v1 writers.
+                for backup in [backup_path(&path), path.with_extension("migration.nebula")] {
                     if backup
                         .try_exists()
                         .map_err(|error| io_error("检查恢复备份", &backup, error))?
@@ -162,57 +143,7 @@ impl Storage {
                         return Err(StorageError::RecoveryAvailable { path, backup });
                     }
                 }
-                match read_optional(&legacy_path)? {
-                    Some(bytes) => {
-                        if bytes.len() as u64 > MAX_NOTEBOOK_BYTES {
-                            return Err(StorageError::TooLarge(legacy_path));
-                        }
-                        let notebook = parse_legacy_snapshot(&legacy_path, &bytes)?;
-                        let source_hash = nebula_format::digest(&bytes);
-                        let encoded = nebula_format::encode_snapshot(&notebook, Some(&source_hash))
-                            .map_err(|message| StorageError::InvalidData {
-                                path: path.clone(),
-                                message,
-                            })?;
-                        // Validate the exact encoded candidate before any commit.
-                        let verified =
-                            nebula_format::decode_snapshot(&encoded).map_err(|message| {
-                                StorageError::InvalidData {
-                                    path: path.clone(),
-                                    message,
-                                }
-                            })?;
-                        if verified.notebook != notebook
-                            || verified.legacy_source_sha256.as_deref() != Some(&source_hash)
-                        {
-                            return Err(StorageError::InvalidData {
-                                path,
-                                message: "迁移验证失败。".into(),
-                            });
-                        }
-                        verify_legacy_source(&legacy_path, Some(&source_hash))?;
-                        // An independent recovery snapshot is committed first.
-                        // A crash before the primary commit stops at recovery on reopen.
-                        atomic_write_new(&migration_backup_path(&path), &encoded)?;
-                        verify_legacy_source(&legacy_path, Some(&source_hash))?;
-                        atomic_write_new(&path, &encoded)?;
-                        current_bytes = Some(encoded);
-                        (notebook, Some(source_hash))
-                    }
-                    None => {
-                        let backup = sibling_with_suffix(&legacy_path, ".bak");
-                        if backup
-                            .try_exists()
-                            .map_err(|error| io_error("检查旧恢复备份", &backup, error))?
-                        {
-                            return Err(StorageError::RecoveryAvailable {
-                                path: legacy_path,
-                                backup,
-                            });
-                        }
-                        (Notebook::default(), None)
-                    }
-                }
+                Notebook::default()
             }
         };
         let current_notebook_digest = if current_bytes.is_some() {
@@ -226,8 +157,6 @@ impl Storage {
                 _lock: lock,
                 current_bytes,
                 current_notebook_digest,
-                legacy_path,
-                legacy_source_sha256,
             },
             notebook,
         ))
@@ -249,7 +178,6 @@ impl Storage {
                 message,
             })?;
         let candidate_digest = notebook_digest(notebook)?;
-        verify_legacy_source(&self.legacy_path, self.legacy_source_sha256.as_deref())?;
 
         // Also refuse overwrite if an editor/import tool changed the file despite
         // our cooperative process lock. The user can export their unsaved work.
@@ -259,8 +187,8 @@ impl Storage {
         if self.current_notebook_digest.as_ref() == Some(&candidate_digest) {
             return Ok(());
         }
-        let bytes = nebula_format::encode_snapshot(notebook, self.legacy_source_sha256.as_deref())
-            .map_err(|message| StorageError::InvalidData {
+        let bytes =
+            nebula_format::encode(notebook).map_err(|message| StorageError::InvalidData {
                 path: self.path.clone(),
                 message,
             })?;
@@ -268,7 +196,6 @@ impl Storage {
             atomic_write(&self.backup_path(), previous)?;
         }
         // Recheck after backup I/O as well, before replacing the primary.
-        verify_legacy_source(&self.legacy_path, self.legacy_source_sha256.as_deref())?;
         if read_optional(&self.path)? != self.current_bytes {
             return Err(StorageError::Conflict(self.path.clone()));
         }
@@ -302,52 +229,8 @@ fn notebook_digest(notebook: &Notebook) -> Result<String, StorageError> {
     Ok(nebula_format::digest(&bytes))
 }
 
-fn verify_legacy_source(path: &Path, expected: Option<&str>) -> Result<(), StorageError> {
-    // Removing/moving the preserved plaintext source is safe. A different source
-    // reappearing later is not silently accepted, including writes by old apps.
-    if let Some(bytes) = read_optional(path)? {
-        if expected != Some(nebula_format::digest(&bytes).as_str()) {
-            return Err(StorageError::LegacyConflict(path.to_path_buf()));
-        }
-    }
-    Ok(())
-}
-
-fn parse_legacy_snapshot(path: &Path, bytes: &[u8]) -> Result<Notebook, StorageError> {
-    let source = std::str::from_utf8(bytes).map_err(|error| StorageError::InvalidData {
-        path: path.to_path_buf(),
-        message: error.to_string(),
-    })?;
-    let notebook = crate::import_export::parse_json(
-        source.strip_prefix('\u{feff}').unwrap_or(source),
-        &mut Vec::new(),
-    )
-    .map_err(|message| StorageError::InvalidData {
-        path: path.to_path_buf(),
-        message,
-    })?;
-    notebook
-        .validate()
-        .map_err(|message| StorageError::InvalidData {
-            path: path.to_path_buf(),
-            message,
-        })?;
-    Ok(notebook)
-}
-
 fn backup_path(path: &Path) -> PathBuf {
-    if path
-        .extension()
-        .is_some_and(|extension| extension == "nebula")
-    {
-        path.with_extension("backup.nebula")
-    } else {
-        sibling_with_suffix(path, ".bak")
-    }
-}
-
-fn migration_backup_path(path: &Path) -> PathBuf {
-    path.with_extension("migration.nebula")
+    path.with_extension("backup.nebula")
 }
 
 fn read_optional(path: &Path) -> Result<Option<Vec<u8>>, StorageError> {
@@ -605,7 +488,7 @@ mod tests {
         let directory = TestDirectory::new();
         let backup = backup_path(&directory.file());
         let notebook = Notebook::default();
-        let bytes = serde_json::to_vec(&notebook).unwrap();
+        let bytes = nebula_format::encode(&notebook).unwrap();
         fs::write(&backup, &bytes).unwrap();
         assert!(matches!(
             Storage::open(directory.file()),
@@ -648,15 +531,15 @@ mod tests {
 
     #[test]
     fn corrupt_main_recovery_instructions_do_not_require_opening_the_notebook() {
-        let path = PathBuf::from("notebook.json");
+        let path = PathBuf::from("notebook.nebula");
         let message = StorageError::InvalidData {
             path,
-            message: "损坏的 JSON".into(),
+            message: "损坏的 .nebula".into(),
         }
         .to_string();
         assert!(message.contains("先关闭程序"));
         assert!(message.contains("保留或重命名损坏的主文件"));
-        assert!(message.contains("notebook.json.bak 复制为 notebook.json"));
+        assert!(message.contains("notebook.backup.nebula 复制为 notebook.nebula"));
         assert!(message.contains("重新打开程序或重试"));
         assert!(!message.contains("导入"));
     }

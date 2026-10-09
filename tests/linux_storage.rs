@@ -53,8 +53,8 @@ fn xdg_data_path_child_probe() {
     assert_eq!(storage.path(), Path::new(&expected));
     if std::env::var_os("NEBULABOOK_TEST_EXISTING_NOTE").is_some() {
         assert_eq!(notebook.notes.len(), 1);
-        assert_eq!(notebook.notes[0].title, "旧 Nebula 的笔记");
-        assert_eq!(notebook.notes[0].content, "改名后继续读取，不复制、不重置");
+        assert_eq!(notebook.notes[0].title, "现有原生笔记");
+        assert_eq!(notebook.notes[0].content, "数据位置保持不变");
     }
 }
 
@@ -103,7 +103,7 @@ fn new_data_directories_and_snapshot_lock_backup_exports_are_private() {
 fn existing_directory_permissions_are_not_changed() {
     let directory = tempfile::tempdir().unwrap();
     std::fs::set_permissions(directory.path(), std::fs::Permissions::from_mode(0o750)).unwrap();
-    let (_storage, _) = Storage::open(directory.path().join("notebook.json")).unwrap();
+    let (_storage, _) = Storage::open(directory.path().join("notebook.nebula")).unwrap();
     assert_eq!(
         std::fs::metadata(directory.path())
             .unwrap()
@@ -115,25 +115,21 @@ fn existing_directory_permissions_are_not_changed() {
 }
 
 #[test]
-fn renamed_app_migrates_in_existing_directory_without_overwriting_plaintext() {
+fn existing_native_data_remains_in_the_established_directory() {
     let directory = tempfile::tempdir().unwrap();
     let xdg = directory.path().join("data");
-    let legacy_path = xdg.join("nebulanotepad/notebook.json");
-    let mut notebook = nebulabook::model::Notebook::default();
-    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
-    notebook.notes.push(Note::new(
-        "旧 Nebula 的笔记".into(),
-        "改名后继续读取，不复制、不重置".into(),
-    ));
-    std::fs::write(&legacy_path, serde_json::to_vec_pretty(&notebook).unwrap()).unwrap();
-    let before = std::fs::read(&legacy_path).unwrap();
+    let path = xdg.join("nebulanotepad/notebook.nebula");
+    let (mut storage, mut notebook) = Storage::open(path.clone()).unwrap();
+    notebook
+        .notes
+        .push(Note::new("现有原生笔记".into(), "数据位置保持不变".into()));
+    storage.save(&notebook).unwrap();
+    drop(storage);
+    let before = std::fs::read(&path).unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "xdg_data_path_child_probe", "--nocapture"])
         .env("XDG_DATA_HOME", &xdg)
-        .env(
-            "NEBULABOOK_TEST_EXPECTED_DATA",
-            legacy_path.with_extension("nebula"),
-        )
+        .env("NEBULABOOK_TEST_EXPECTED_DATA", &path)
         .env("NEBULABOOK_TEST_EXISTING_NOTE", "1")
         .output()
         .unwrap();
@@ -142,14 +138,6 @@ fn renamed_app_migrates_in_existing_directory_without_overwriting_plaintext() {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert_eq!(std::fs::read(&legacy_path).unwrap(), before);
-    assert!(legacy_path.with_extension("nebula").exists());
-    assert_eq!(
-        nebulabook::nebula_format::decode(
-            &std::fs::read(legacy_path.with_extension("migration.nebula")).unwrap()
-        )
-        .unwrap(),
-        notebook
-    );
+    assert_eq!(std::fs::read(path).unwrap(), before);
     assert!(!xdg.join("nebulabook").exists());
 }

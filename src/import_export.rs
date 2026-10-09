@@ -1,8 +1,7 @@
-//! Explicit, local-only migration and exports. Parsing never changes the current
+//! Explicit, local-only imports and exports. Parsing never changes the current
 //! notebook; the fully validated candidate is installed only after every check.
-use crate::model::{Folder, Note, Notebook, Tag};
+use crate::model::{Note, Notebook};
 use crate::nebula_format;
-use crate::storage::MAX_NOTEBOOK_BYTES;
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -70,14 +69,13 @@ pub fn import_bytes(
     let mut imported = if extension == "nebula" {
         nebula_format::decode(bytes)?
     } else {
-        if bytes.len() as u64 > MAX_NOTEBOOK_BYTES {
+        if bytes.len() as u64 > nebula_format::MAX_PAYLOAD_BYTES {
             return Err("Import exceeds the 64 MiB file limit.".into());
         }
         let source = std::str::from_utf8(bytes)
             .map_err(|_| "Import must be valid UTF-8 text.".to_string())?;
         let text = source.strip_prefix('\u{feff}').unwrap_or(source);
         match extension.as_str() {
-            "json" => parse_json(text, &mut warnings)?,
             "txt" | "md" | "markdown" | "html" | "htm" => {
                 let title = Path::new(filename)
                     .file_stem()
@@ -93,7 +91,7 @@ pub fn import_bytes(
                 let mut note = Note::new(title.to_string(), content);
                 if html {
                     note.original_html = Some(source.to_string());
-                    warnings.push("HTML was converted to editable text without executing scripts or loading remote resources. The original HTML is retained in complete .nebula or explicit JSON backups.".into());
+                    warnings.push("HTML was converted to editable text without executing scripts or loading remote resources. The original HTML is retained in complete .nebula backups.".into());
                 }
                 let mut imported = Notebook::default();
                 imported.notes.push(note);
@@ -101,8 +99,7 @@ pub fn import_bytes(
             }
             _ => {
                 return Err(
-                    "Unsupported import format. Choose NEBULA, TXT, Markdown, HTML, or JSON."
-                        .into(),
+                    "Unsupported import format. Choose NEBULA, TXT, Markdown, or HTML.".into(),
                 )
             }
         }
@@ -164,41 +161,21 @@ pub fn import_bytes(
     candidate
         .validate()
         .map_err(|error| format!("Import would create an invalid notebook: {error}"))?;
-    let serialized = serde_json::to_vec_pretty(&candidate)
-        .map_err(|error| format!("Cannot encode imported notebook: {error}"))?;
-    if serialized.len() as u64 > MAX_NOTEBOOK_BYTES {
-        return Err(
-            "Import would exceed the notebook's 64 MiB storage limit. Nothing was imported.".into(),
-        );
-    }
     // Check the exact native envelope budget before installing the candidate.
     nebula_format::encode(&candidate)?;
     *notebook = candidate;
     Ok(report)
 }
 
-/// Complete portable default backup; plaintext JSON requires its explicit API.
+/// Complete portable backup, including metadata and original HTML.
 pub fn export_backup(path: &Path, notebook: &Notebook) -> Result<(), String> {
     if !path
         .extension()
         .is_some_and(|extension| extension.eq_ignore_ascii_case("nebula"))
     {
-        return Err("完整备份请使用 .nebula 后缀；TXT / Markdown / JSON 是显式明文导出。".into());
+        return Err("完整备份请使用 .nebula 后缀；TXT / Markdown 是单篇笔记的明文导出。".into());
     }
     write_new(path, &nebula_format::encode(notebook)?)
-}
-
-/// Explicit compatibility export. This file exposes the complete notebook as plaintext.
-pub fn export_plaintext_json(path: &Path, notebook: &Notebook) -> Result<(), String> {
-    notebook
-        .validate()
-        .map_err(|error| format!("Cannot export invalid notebook: {error}"))?;
-    let bytes = serde_json::to_vec_pretty(notebook)
-        .map_err(|error| format!("Cannot encode backup: {error}"))?;
-    if bytes.len() as u64 > MAX_NOTEBOOK_BYTES {
-        return Err("Backup exceeds the 64 MiB storage limit.".into());
-    }
-    write_new(path, &bytes)
 }
 
 /// Markdown is exported as the editor's Markdown source, never rendered HTML.
@@ -297,77 +274,6 @@ fn remap_ids(notebook: &mut Notebook) {
     }
 }
 
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LegacyNote {
-    id: String,
-    user_id: String,
-    folder_id: Option<String>,
-    title: String,
-    content: Option<String>,
-    is_pinned: bool,
-    is_deleted: bool,
-    deleted_at: Option<String>,
-    version: u64,
-    created_at: String,
-    updated_at: String,
-    tags: Vec<String>,
-    synced_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LegacyFolder {
-    id: String,
-    user_id: String,
-    name: String,
-    parent_id: Option<String>,
-    sort_order: i32,
-    created_at: String,
-    updated_at: String,
-    synced_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LegacyTag {
-    id: String,
-    user_id: String,
-    name: String,
-    color: String,
-    created_at: String,
-    synced_at: Option<String>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyStores {
-    notes: Vec<Value>,
-    #[serde(default)]
-    folders: Vec<Value>,
-    #[serde(default)]
-    tags: Vec<Value>,
-    #[serde(default)]
-    settings: Vec<Value>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct LegacyExport {
-    format: String,
-    schema_version: u32,
-    exported_at: String,
-    database: LegacyDatabase,
-    stores: LegacyStores,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct LegacyDatabase {
-    name: String,
-    version: u64,
-}
-
 /// Value's default deserializer silently keeps the last duplicate object key.
 /// Reject ambiguous backups instead of importing a potentially truncated record.
 struct UniqueJson(Value);
@@ -447,146 +353,6 @@ pub(crate) fn unique_json(bytes: &[u8]) -> Result<Value, String> {
     serde_json::from_slice::<UniqueJson>(bytes)
         .map(|value| value.0)
         .map_err(|error| format!("Invalid JSON: {error}"))
-}
-
-pub(crate) fn parse_json(text: &str, warnings: &mut Vec<String>) -> Result<Notebook, String> {
-    let value = unique_json(text.as_bytes())?;
-    if value.get("schema_version").is_some() {
-        return serde_json::from_value(value)
-            .map_err(|error| format!("Invalid native backup schema: {error}"));
-    }
-    let archive = value.clone();
-    let stores = if value.is_array() {
-        LegacyStores {
-            notes: serde_json::from_value(value).map_err(|error| error.to_string())?,
-            folders: vec![],
-            tags: vec![],
-            settings: vec![],
-        }
-    } else if value.get("format").is_some() {
-        let export: LegacyExport = serde_json::from_value(value)
-            .map_err(|error| format!("Invalid legacy export schema: {error}"))?;
-        if export.format != "nebula-legacy-indexeddb"
-            || export.schema_version != 1
-            || export.database.name != "NebulaLocalDB"
-            || !matches!(export.database.version, 1 | 10)
-        {
-            // Dexie schema v1 uses native IndexedDB version 10.
-            return Err("Unsupported legacy export format or database version.".into());
-        }
-        validate_timestamp(&export.exported_at)?;
-        export.stores
-    } else {
-        serde_json::from_value(value)
-            .map_err(|error| format!("Unrecognized JSON backup schema: {error}"))?
-    };
-    let mut notebook = parse_legacy_stores(stores, warnings)?;
-    notebook.legacy_archives.push(archive);
-    Ok(notebook)
-}
-
-fn validate_timestamp(value: &str) -> Result<(), String> {
-    chrono::DateTime::parse_from_rfc3339(value)
-        .map(|_| ())
-        .map_err(|_| "Legacy import contains an invalid RFC3339 timestamp.".into())
-}
-
-fn validate_legacy_metadata(
-    user_id: &str,
-    created_at: &str,
-    synced_at: Option<&str>,
-) -> Result<(), String> {
-    if user_id.trim().is_empty() {
-        return Err("Legacy records must have a nonempty userId.".into());
-    }
-    validate_timestamp(created_at)?;
-    if let Some(timestamp) = synced_at {
-        validate_timestamp(timestamp)?;
-    }
-    Ok(())
-}
-
-fn parse_legacy_stores(
-    stores: LegacyStores,
-    warnings: &mut Vec<String>,
-) -> Result<Notebook, String> {
-    let mut notebook = Notebook::default();
-    let mut folder_owners = HashMap::new();
-    let mut tag_owners = HashMap::new();
-    for raw in stores.folders {
-        let folder: LegacyFolder = serde_json::from_value(raw)
-            .map_err(|error| format!("Invalid legacy folder: {error}"))?;
-        validate_legacy_metadata(
-            &folder.user_id,
-            &folder.created_at,
-            folder.synced_at.as_deref(),
-        )?;
-        validate_timestamp(&folder.updated_at)?;
-        folder_owners.insert(folder.id.clone(), folder.user_id);
-        notebook.folders.push(Folder {
-            id: folder.id,
-            name: folder.name,
-            parent_id: folder.parent_id,
-            sort_order: folder.sort_order,
-        });
-    }
-    for folder in &notebook.folders {
-        if let Some(parent_id) = &folder.parent_id {
-            if folder_owners.get(&folder.id) != folder_owners.get(parent_id) {
-                return Err("Legacy folder has an unavailable or cross-user parent. Import a complete export.".into());
-            }
-        }
-    }
-    for raw in stores.tags {
-        let tag: LegacyTag =
-            serde_json::from_value(raw).map_err(|error| format!("Invalid legacy tag: {error}"))?;
-        validate_legacy_metadata(&tag.user_id, &tag.created_at, tag.synced_at.as_deref())?;
-        tag_owners.insert(tag.id.clone(), tag.user_id);
-        notebook.tags.push(Tag {
-            id: tag.id,
-            name: tag.name,
-            color: tag.color,
-        });
-    }
-    for raw in stores.notes {
-        let old: LegacyNote = serde_json::from_value(raw.clone())
-            .map_err(|error| format!("Invalid legacy note: {error}"))?;
-        validate_legacy_metadata(&old.user_id, &old.created_at, old.synced_at.as_deref())?;
-        if let Some(folder_id) = &old.folder_id {
-            if folder_owners.get(folder_id) != Some(&old.user_id) {
-                return Err("Legacy note has an unavailable or cross-user folder. Import a complete export.".into());
-            }
-        }
-        for tag_id in &old.tags {
-            if tag_owners.get(tag_id) != Some(&old.user_id) {
-                return Err(
-                    "Legacy note has an unavailable or cross-user tag. Import a complete export."
-                        .into(),
-                );
-            }
-        }
-        let html = old.content.unwrap_or_default();
-        let content = html_to_text(&html)?;
-        let mut note = Note::new(old.title, content);
-        note.id = old.id;
-        note.original_html = Some(html);
-        note.legacy_metadata = Some(raw);
-        note.folder_id = old.folder_id;
-        note.tag_ids = old.tags;
-        note.is_pinned = old.is_pinned;
-        note.is_deleted = old.is_deleted;
-        note.deleted_at = old.deleted_at;
-        note.created_at = old.created_at;
-        note.updated_at = old.updated_at;
-        note.version = old.version;
-        notebook.notes.push(note);
-    }
-    warnings.push("Legacy HTML was converted to editable text. Original note HTML and the complete legacy JSON data are archived in native JSON backups, including folder/tag timestamps and browser settings.".into());
-    if !stores.settings.is_empty() {
-        warnings.push("Browser-specific settings are archived in JSON backups but are not applied to the native app.".into());
-    }
-    notebook.legacy_settings = stores.settings;
-    Ok(notebook)
 }
 
 #[cfg(test)]

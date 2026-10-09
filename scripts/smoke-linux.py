@@ -17,7 +17,7 @@ import tempfile
 import time
 
 from smoke_fixtures import (DEMO_TITLE, MISSING_QUERY, SEARCH_QUERY, TRASH_TITLE,
-                            notebook, read_notebook, seed_legacy)
+                            notebook, read_notebook, seed_nebula)
 
 binary, backend, output_arg = sys.argv[1:]
 output = Path(output_arg)
@@ -38,13 +38,10 @@ binary_sha256 = hashlib.sha256(Path(binary).read_bytes()).hexdigest()
 def capture_diagnostics():
     """Only inspect this test's disposable data/display, never a real notebook."""
     if active_data_dir is not None and active_data_dir.exists():
-        paths = sorted(active_data_dir.rglob('notebook.json'))
-        paths += sorted(active_data_dir.rglob('notebook.nebula'))
+        paths = sorted(active_data_dir.rglob('notebook.nebula'))
         for index, path in enumerate(paths):
             data = path.read_bytes()
             (output / f'{backend}-failure-notebook-{index}{path.suffix}').write_bytes(data[:65536])
-            if path.suffix == '.json':
-                print('Disposable smoke notebook:', data[:4096].decode(errors='replace'), flush=True)
     if backend == 'x11' and shutil.which('import'):
         try:
             subprocess.run(['import', '-window', 'root', str(output / 'x11-failure.png')], timeout=10, check=False)
@@ -144,6 +141,10 @@ def capture(window, name, expected, *, scale=1):
         'binary_sha256': binary_sha256,
         'source': 'Actual Rust application, Xvfb / Openbox / Mesa, ImageMagick capture including native frame',
         'synthetic_data_only': True, 'screenshots': screenshots,
+        'data_provenance': {
+            'before-input/editor/conflict': 'Fresh app workspace, actual keyboard editing and app saves',
+            'demo-*': 'Authenticated .nebula visual fixture; app performs navigation, Restore and New Note',
+        },
         'review_required': ['Chinese glyph appearance and clipping', 'spacing, contrast and alignment',
                             'correct visible search results / empty states', 'native frame and small-window usability'],
         'not_verified_by_screenshots': ['pixel-perfect design approval', 'OS-level backdrop blur',
@@ -183,7 +184,6 @@ try:
         env = os.environ.copy()
         # Do not inherit any path that could write diagnostics to a real profile.
         env.pop('NEBULABOOK_STARTUP_LOG', None)
-        env.pop('NEBULA_STARTUP_LOG', None)
         for key, name in [('HOME', 'home'), ('XDG_DATA_HOME', 'data'), ('XDG_CONFIG_HOME', 'config'),
                           ('XDG_CACHE_HOME', 'cache'), ('XDG_RUNTIME_DIR', 'runtime')]:
             path = base / name
@@ -259,6 +259,7 @@ try:
             before = data.read_bytes()
             app = app_start('reopen')
             assert data.read_bytes() == before
+            assert saved(), 'Reopened notebook lost the exact keyboard-written title or body'
             checks += ['new-edit-save', 'private-data-permissions', 'normal-close', 'reopen-preserves-data',
                        'nebula-authenticated-exact-content', 'nebula-not-plaintext-json']
             window = native_window(app)
@@ -288,12 +289,11 @@ try:
                     path.mkdir(mode=0o700)
                     app_env[key] = str(path)
                 app_env['WINIT_X11_SCALE_FACTOR'] = str(scale)
-                legacy = seed_legacy(app_env['XDG_DATA_HOME'], empty=empty)
-                legacy_before = legacy.read_bytes()
+                # This initializes visual input, never the keyboard/save result.
+                canonical = seed_nebula(app_env['XDG_DATA_HOME'], empty=empty)
+                before_open = canonical.read_bytes()
                 process = app_start(name, app_env)
-                canonical = legacy.with_suffix('.nebula')
-                wait_for(lambda: canonical.exists(), 'Legacy screenshot fixture was not migrated')
-                assert legacy.read_bytes() == legacy_before, 'Migration changed legacy source bytes'
+                assert canonical.read_bytes() == before_open, 'Opening changed the native visual fixture'
                 assert read_notebook(canonical, isolated_root=app_env['XDG_DATA_HOME']) == notebook(empty)
                 assert canonical.stat().st_mode & 0o777 == 0o600
                 return process, native_window(process), canonical, app_env
@@ -337,7 +337,7 @@ try:
             demo_before = demo.read_bytes()
             normal_close(app, window)
             assert demo.read_bytes() == demo_before
-            checks += ['legacy-demo-migration-preserves-source', 'visual-navigation-preserves-data',
+            checks += ['native-demo-fixture-preserved', 'visual-navigation-preserves-data',
                        'trash-restore-preserves-content']
 
             # Fresh process resets search/trash/scroll state through the real UI.

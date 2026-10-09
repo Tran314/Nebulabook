@@ -21,7 +21,7 @@ fn run_app() -> eframe::Result<()> {
         "Nebulabook",
         native_options(),
         Box::new(|cc| {
-            if !error_dialog_enabled(nebulabook::runtime::option("NO_ERROR_DIALOG").as_deref()) {
+            if !error_dialog_enabled(std::env::var_os("NEBULABOOK_NO_ERROR_DIALOG").as_deref()) {
                 #[cfg(windows)]
                 if let Some(render_state) = &cc.wgpu_render_state {
                     let adapter = render_state.adapter.get_info();
@@ -132,7 +132,7 @@ fn report_startup_error(error: &eframe::Error) {
     // A Windows GUI executable may not have usable standard streams. The
     // explicitly selected log path also makes noninteractive CI failures visible.
     let _ = io::stderr().lock().write_all(diagnostic.as_bytes());
-    let log_status = match nebulabook::runtime::option("STARTUP_LOG") {
+    let log_status = match std::env::var_os("NEBULABOOK_STARTUP_LOG") {
         Some(path) => match write_startup_log(Path::new(&path), &diagnostic) {
             Ok(()) => format!("\n诊断日志：{}", Path::new(&path).display()),
             Err(log_error) => {
@@ -143,7 +143,7 @@ fn report_startup_error(error: &eframe::Error) {
         },
         None => String::new(),
     };
-    if error_dialog_enabled(nebulabook::runtime::option("NO_ERROR_DIALOG").as_deref()) {
+    if error_dialog_enabled(std::env::var_os("NEBULABOOK_NO_ERROR_DIALOG").as_deref()) {
         rfd::MessageDialog::new()
             .set_level(rfd::MessageLevel::Error)
             .set_title("Nebulabook 无法启动")
@@ -232,7 +232,7 @@ mod tests {
     #[test]
     fn startup_log_never_overwrites_an_existing_file() {
         let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("notebook.json");
+        let path = directory.path().join("notebook.nebula");
         std::fs::write(&path, "existing notebook").unwrap();
         let error = write_startup_log(&path, "diagnostic").unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);

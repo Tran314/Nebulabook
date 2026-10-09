@@ -14,15 +14,15 @@
 
 存储层负责同目录临时写入、同步和原子替换；首次发布使用硬链接原子 create-new，不支持硬链接时明确报错。恢复备份保存上一份成功快照，多实例文件锁避免两个程序各自覆盖对方。该机制不承诺对所有远程/异常文件系统的掉电安全；仍应做独立备份。
 
-## 迁移边界
+## 导入与数据边界
 
-旧浏览器数据按 origin 隔离，原生程序不能自动读取。附带的导出脚本由用户在旧 origin 主动运行，仅导出 IndexedDB，不迁移账号凭据。导入模块先完整解析、校验候选数据，再合入内存副本；失败不部分写入。重复导入默认复制并生成新 ID。HTML 仅作非执行解析，正文变为纯文本，原文保留在备份中。
+支持 `.nebula`、TXT、Markdown 和 HTML 导入。导入模块先完整解析、校验候选数据，再合入内存副本；失败不部分写入。重复导入默认复制并生成新 ID。HTML 仅作非执行解析，正文变为纯文本，原文保留在完整 `.nebula` 备份中。完整导出仅使用 `.nebula`；TXT / Markdown 只导出所选笔记正文。
 
-旧浏览器形态：NebulaLocalDB / Dexie v1（IndexedDB physical version10），notes/folders/tags/settings 四个对象仓库。原生模型使用独立 schema_version，不尝试改写浏览器数据库。
+不读取或迁移旧原生 JSON，不导入 JSON / Dexie，不提供浏览器导出脚本或明文 JSON 导出。已有 `.nebula` 模型中的旧元数据字段保留为非执行数据，不能作为删除字段或重置笔记库的理由。仅有旧 JSON 时打开新笔记库，旧文件保持原样；用户须自行在原程序导出受支持的文本格式。
 
 ## 取舍
 
-保留记事本最重要的编辑、保存、查找、导入导出。Markdown为文本，HTML不再作为可执行DOM。文件夹/标签可保留迁移元数据，当前没有完整管理 UI。移除云同步占位、后端鉴权与数据库部署依赖，避免旧服务被误部署。
+保留记事本最重要的编辑、保存、查找、导入导出。Markdown 为文本，HTML 不作为可执行 DOM。已有 `.nebula` 中的文件夹、标签和元数据会保留，当前没有完整管理 UI。没有云同步、后端鉴权或数据库部署依赖。
 
 ## Linux 发行边界
 
@@ -32,10 +32,12 @@ Linux x64/ARM64在各自原生Ubuntu22.04 runner编译，要求glibc2.35+。不�
 
 ## 名称与持久化身份
 
-可见品牌 Nebulabook、Rust包/二进制 `nebulabook`、仓库 `Tran314/Nebulabook`。持久化身份仍为 `ProjectDirs::from("com", "Nebula", "Nebula Notepad")`，保留Linux `nebulanotepad`和Windows旧应用数据路径；不搬动或覆盖旧源文件；在原目录无损迁移 notebook.json 到 notebook.nebula，保留迁移恢复快照。旧浏览器 `NebulaLocalDB` 与 `nebula-legacy-indexeddb` 协议保持不变。
+可见品牌 Nebulabook、Rust 包/二进制 `nebulabook`、仓库 `Tran314/Nebulabook`。持久化身份仍为 `ProjectDirs::from("com", "Nebula", "Nebula Notepad")`，保留 Linux `nebulanotepad` 和 Windows 应用数据路径。主文件为 `notebook.nebula`，实例锁名稳定为 `notebook.json.lock`，保证先前 `.nebula` 构建与当前程序互斥；锁文件名不表示应用仍支持 JSON 数据文件。环境配置只使用 `NEBULABOOK_` 前缀。
 
-## .nebula 封装与迁移
+## .nebula 封装与保存
 
-XChaCha20-Poly1305 使用公开的应用兼容密钥，24字节系统随机 nonce，44字节全部认证头，16字节 tag。这里只提供免密码的轻量混淆与完整性检查，不提供可靠保密或对抗源码持有者的篡改签名。精确布局和可复现 fixture 见 [NEBULA_FORMAT.md](NEBULA_FORMAT.md)。
+XChaCha20-Poly1305 使用公开的格式密钥、24 字节系统随机 nonce、44 字节全部认证头和 16 字节 tag。这里只提供免密码的轻量混淆与完整性检查，不提供可靠保密或对抗源码持有者的篡改签名。精确布局和可复现 fixture 见 [NEBULA_FORMAT.md](NEBULA_FORMAT.md)。
 
-旧 JSON 原文及旧备份保留，迁移源 SHA-256 写入认证载荷。主文件存在时不回退到 JSON；旧源改写/降级写入会阻止打开与保存，旧源被用户迁走/删除则允许继续使用新库。锁仍是 notebook.json.lock。迁移先验证候选，生成独立 .migration.nebula，再原子创建主文件；中断后有备份即要求显式恢复。默认导出也是 .nebula；明文兼容导出是明确的独立操作。
+`.nebula` v1 的封装和 Notebook schema 保持不变。历史 `legacy_source_sha256` 字段仍校验形状但不参与操作；新编码始终写入 null。应用不检查旁边的旧 JSON。打开、保存和导入继续严格验证当前格式；保存逐字节检查 `.nebula` 的外部变更，原子更新主文件并保存上一份快照。
+
+主文件缺失且发现 `notebook.backup.nebula` 或先前构建留下的 `notebook.migration.nebula` 时，要求显式恢复，避免隐藏已有当前格式数据。当前程序不会创建迁移快照。损坏或不支持的 `.nebula` 不回退到其他格式，也不自动重置为空库。

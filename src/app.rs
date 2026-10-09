@@ -1,7 +1,5 @@
 use crate::fonts::install_system_font;
-use crate::import_export::{
-    export_backup, export_note, export_plaintext_json, import_file, ImportMode, NoteFormat,
-};
+use crate::import_export::{export_backup, export_note, import_file, ImportMode, NoteFormat};
 use crate::model::{Note, Notebook};
 use crate::storage::Storage;
 use crate::theme::{self, Palette};
@@ -20,7 +18,6 @@ enum UiAction {
     TogglePin,
     Import,
     ExportBackup,
-    ExportPlaintextJson,
     ExportNote(bool),
     Reopen,
     #[cfg(target_os = "linux")]
@@ -32,7 +29,6 @@ enum UiAction {
 enum PathAction {
     Import,
     Backup,
-    PlaintextJson,
     Note(bool),
 }
 
@@ -298,7 +294,7 @@ impl NotepadApp {
             .set_title("导入笔记（复制导入，不覆盖已有笔记）")
             .add_filter(
                 "笔记和备份",
-                &["nebula", "txt", "md", "markdown", "html", "htm", "json"],
+                &["nebula", "txt", "md", "markdown", "html", "htm"],
             )
             .pick_file()
         else {
@@ -395,38 +391,6 @@ impl NotepadApp {
         }
     }
 
-    fn export_plaintext_json(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .set_title("导出明文 JSON（不加密、不混淆）")
-            .add_filter("明文 JSON", &["json"])
-            .set_file_name(format!(
-                "nebulabook-plaintext-{}.json",
-                chrono::Local::now().format("%Y%m%d-%H%M%S")
-            ))
-            .save_file()
-        else {
-            self.file_dialog_dismissed();
-            return;
-        };
-        self.export_plaintext_to_path(&path);
-    }
-
-    fn export_plaintext_to_path(&mut self, path: &Path) -> bool {
-        match export_plaintext_json(path, &self.snapshot_with_draft()) {
-            Ok(()) => {
-                self.notice = Some(format!(
-                    "明文 JSON 已导出到 {}。此文件未加密，请妥善保管。",
-                    path.display()
-                ));
-                true
-            }
-            Err(error) => {
-                self.error = Some(format!("导出失败：{error}"));
-                false
-            }
-        }
-    }
-
     fn export_selected(&mut self, markdown: bool) {
         if self.selected_id.is_none() {
             return;
@@ -501,7 +465,6 @@ impl NotepadApp {
         match action {
             PathAction::Import => self.import_from_path(path),
             PathAction::Backup => self.export_backup_to_path(path),
-            PathAction::PlaintextJson => self.export_plaintext_to_path(path),
             PathAction::Note(markdown) => self.export_selected_to_path(path, markdown),
         }
     }
@@ -518,7 +481,6 @@ impl NotepadApp {
             ui.heading(match dialog.action {
                 PathAction::Import => "直接输入导入文件路径",
                 PathAction::Backup => "直接输入 Nebula 备份路径",
-                PathAction::PlaintextJson => "直接输入明文 JSON 导出路径",
                 PathAction::Note(false) => "直接输入 TXT 导出路径",
                 PathAction::Note(true) => "直接输入 Markdown 导出路径",
             });
@@ -664,7 +626,7 @@ impl NotepadApp {
                 fonts.has_glyphs(&egui::FontId::proportional(16.0), "中文记事本保存回收站")
                     && fonts.has_glyphs(&egui::FontId::monospace(16.0), "中文记事本保存回收站")
             });
-            if crate::runtime::option("NO_ERROR_DIALOG").as_deref()
+            if std::env::var_os("NEBULABOOK_NO_ERROR_DIALOG").as_deref()
                 == Some(std::ffi::OsStr::new("1"))
             {
                 use std::io::Write;
@@ -718,7 +680,6 @@ impl NotepadApp {
             UiAction::TogglePin => self.toggle_pin(),
             UiAction::Import => self.import_notes(),
             UiAction::ExportBackup => self.export_native_backup(),
-            UiAction::ExportPlaintextJson => self.export_plaintext_json(),
             UiAction::ExportNote(markdown) => self.export_selected(markdown),
             #[cfg(target_os = "linux")]
             UiAction::ManualPath(action) => self.open_path_dialog(action),
@@ -810,10 +771,7 @@ impl NotepadApp {
                             actions.push(UiAction::Save);
                         }
                         ui.menu_button("导入 / 导出", |ui| {
-                            if ui
-                                .button("导入 Nebula / TXT / Markdown / HTML / JSON…")
-                                .clicked()
-                            {
+                            if ui.button("导入 Nebula / TXT / Markdown / HTML…").clicked() {
                                 ui.close();
                                 actions.push(UiAction::Import);
                             }
@@ -821,14 +779,6 @@ impl NotepadApp {
                             if ui.button("导出全部为 Nebula 备份…").clicked() {
                                 ui.close();
                                 actions.push(UiAction::ExportBackup);
-                            }
-                            if ui
-                                .button("导出明文 JSON（兼容格式）…")
-                                .on_hover_text("不加密、不混淆；请妥善保管导出的文件。")
-                                .clicked()
-                            {
-                                ui.close();
-                                actions.push(UiAction::ExportPlaintextJson);
                             }
                             ui.add_enabled_ui(self.selected_id.is_some(), |ui| {
                                 if ui.button("导出当前笔记为 TXT…").clicked() {
@@ -847,7 +797,6 @@ impl NotepadApp {
                                     for (label, action) in [
                                         ("导入文件…", PathAction::Import),
                                         ("导出 Nebula 备份…", PathAction::Backup),
-                                        ("导出明文 JSON…", PathAction::PlaintextJson),
                                         ("导出当前笔记 TXT…", PathAction::Note(false)),
                                         ("导出当前笔记 Markdown…", PathAction::Note(true)),
                                     ] {
@@ -2348,7 +2297,7 @@ mod tests {
     #[test]
     fn failing_to_open_existing_data_never_enables_an_empty_replacement() {
         let directory = TempDir::new().unwrap();
-        let path = directory.path().join("notes.json");
+        let path = directory.path().join("notes.nebula");
         std::fs::write(&path, b"unreadable notebook").unwrap();
         let mut app = NotepadApp::from_storage(Storage::open(path.clone()));
         assert!(app.storage.is_none());
@@ -2392,17 +2341,12 @@ mod tests {
             crate::nebula_format::decode(&std::fs::read(backup).unwrap()).unwrap(),
             rescued
         );
-        let plaintext = directory.path().join("explicit-plaintext.json");
-        assert!(app.submit_path(PathAction::PlaintextJson, plaintext.to_str().unwrap()));
-        let mut decoded: Notebook =
-            serde_json::from_slice(&std::fs::read(plaintext).unwrap()).unwrap();
-        // Each rescue snapshots the still-unsaved draft at its own timestamp.
-        decoded.validate().unwrap();
-        assert_eq!(decoded.notes.len(), rescued.notes.len());
-        for (actual, expected) in decoded.notes.iter_mut().zip(&rescued.notes) {
-            actual.updated_at.clone_from(&expected.updated_at);
-        }
-        assert_eq!(decoded, rescued);
+        let markdown = directory.path().join("rescue.md");
+        assert!(app.submit_path(PathAction::Note(true), markdown.to_str().unwrap()));
+        assert_eq!(
+            std::fs::read_to_string(markdown).unwrap(),
+            "unsaved rescue 中文"
+        );
         let misleading = directory.path().join("not-a-nebula-backup.json");
         assert!(!app.submit_path(PathAction::Backup, misleading.to_str().unwrap()));
         assert!(!misleading.exists());
@@ -2424,7 +2368,7 @@ mod tests {
         assert!(app.dirty);
         assert_eq!(app.error.as_deref(), Some("prior save error"));
         assert!(app.notice.as_ref().unwrap().contains("未选择文件"));
-        assert!(!app.submit_path(PathAction::Backup, "~/backup.json"));
+        assert!(!app.submit_path(PathAction::Backup, "~/backup.nebula"));
         assert!(app.error.as_ref().unwrap().contains("完整文件路径"));
         app.open_path_dialog(PathAction::Backup);
         let ctx = egui::Context::default();
@@ -2452,7 +2396,7 @@ mod tests {
         let ctx = egui::Context::default();
         if !install_system_font(&ctx) {
             assert_ne!(
-                crate::runtime::option("REQUIRE_CJK_FONT").as_deref(),
+                std::env::var_os("NEBULABOOK_REQUIRE_CJK_FONT").as_deref(),
                 Some(std::ffi::OsStr::new("1")),
                 "A system CJK font is required for this validation run"
             );
