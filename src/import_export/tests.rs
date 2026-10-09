@@ -230,7 +230,7 @@ fn missing_and_cross_user_references_are_rejected() {
 #[test]
 fn full_native_backup_round_trips_all_metadata_and_trashed_notes() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("backup.json");
+    let path = directory.path().join("backup.nebula");
     let mut notebook = Notebook::default();
     import_json(legacy_full_export(), &mut notebook, ImportMode::Merge).unwrap();
     notebook.notes[0].set_deleted(true);
@@ -243,7 +243,7 @@ fn full_native_backup_round_trips_all_metadata_and_trashed_notes() {
 #[test]
 fn exports_never_overwrite_existing_files() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("existing.json");
+    let path = directory.path().join("existing.nebula");
     fs::write(&path, b"important existing file").unwrap();
     assert!(export_backup(&path, &Notebook::default())
         .unwrap_err()

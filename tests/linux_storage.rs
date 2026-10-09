@@ -24,7 +24,7 @@ fn default_storage_follows_absolute_xdg_data_home_and_home_fallback() {
         } else {
             home.join(".local/share")
         }
-        .join("nebulanotepad/notebook.json");
+        .join("nebulanotepad/notebook.nebula");
         let mut child = std::process::Command::new(std::env::current_exe().unwrap());
         child
             .args(["--exact", "xdg_data_path_child_probe", "--nocapture"])
@@ -62,7 +62,7 @@ fn xdg_data_path_child_probe() {
 fn new_data_directories_and_snapshot_lock_backup_exports_are_private() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let path = root.join("new-parent/notebook/notebook.json");
+    let path = root.join("new-parent/notebook/notebook.nebula");
     let (mut storage, mut notebook) = Storage::open(path.clone()).unwrap();
     notebook
         .notes
@@ -79,7 +79,7 @@ fn new_data_directories_and_snapshot_lock_backup_exports_are_private() {
             0o700
         );
     }
-    let backup = root.join("export.json");
+    let backup = root.join("export.nebula");
     let note = root.join("export.txt");
     export_backup(&backup, &notebook).unwrap();
     export_note(&note, &notebook.notes[0], NoteFormat::Text).unwrap();
@@ -115,22 +115,25 @@ fn existing_directory_permissions_are_not_changed() {
 }
 
 #[test]
-fn renamed_app_reuses_existing_nebula_notebook_without_migration_or_overwrite() {
+fn renamed_app_migrates_in_existing_directory_without_overwriting_plaintext() {
     let directory = tempfile::tempdir().unwrap();
     let xdg = directory.path().join("data");
     let legacy_path = xdg.join("nebulanotepad/notebook.json");
-    let (mut storage, mut notebook) = Storage::open(legacy_path.clone()).unwrap();
+    let mut notebook = nebulabook::model::Notebook::default();
+    std::fs::create_dir_all(legacy_path.parent().unwrap()).unwrap();
     notebook.notes.push(Note::new(
         "旧 Nebula 的笔记".into(),
         "改名后继续读取，不复制、不重置".into(),
     ));
-    storage.save(&notebook).unwrap();
-    drop(storage);
+    std::fs::write(&legacy_path, serde_json::to_vec_pretty(&notebook).unwrap()).unwrap();
     let before = std::fs::read(&legacy_path).unwrap();
     let output = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "xdg_data_path_child_probe", "--nocapture"])
         .env("XDG_DATA_HOME", &xdg)
-        .env("NEBULABOOK_TEST_EXPECTED_DATA", &legacy_path)
+        .env(
+            "NEBULABOOK_TEST_EXPECTED_DATA",
+            legacy_path.with_extension("nebula"),
+        )
         .env("NEBULABOOK_TEST_EXISTING_NOTE", "1")
         .output()
         .unwrap();
@@ -140,5 +143,13 @@ fn renamed_app_reuses_existing_nebula_notebook_without_migration_or_overwrite() 
         String::from_utf8_lossy(&output.stderr)
     );
     assert_eq!(std::fs::read(&legacy_path).unwrap(), before);
+    assert!(legacy_path.with_extension("nebula").exists());
+    assert_eq!(
+        nebulabook::nebula_format::decode(
+            &std::fs::read(legacy_path.with_extension("migration.nebula")).unwrap()
+        )
+        .unwrap(),
+        notebook
+    );
     assert!(!xdg.join("nebulabook").exists());
 }

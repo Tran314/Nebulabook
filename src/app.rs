@@ -1,7 +1,10 @@
 use crate::fonts::install_system_font;
-use crate::import_export::{export_backup, export_note, import_file, ImportMode, NoteFormat};
+use crate::import_export::{
+    export_backup, export_note, export_plaintext_json, import_file, ImportMode, NoteFormat,
+};
 use crate::model::{Note, Notebook};
 use crate::storage::Storage;
+use crate::theme::{self, Palette};
 use eframe::egui;
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -17,6 +20,7 @@ enum UiAction {
     TogglePin,
     Import,
     ExportBackup,
+    ExportPlaintextJson,
     ExportNote(bool),
     Reopen,
     #[cfg(target_os = "linux")]
@@ -28,6 +32,7 @@ enum UiAction {
 enum PathAction {
     Import,
     Backup,
+    PlaintextJson,
     Note(bool),
 }
 
@@ -59,13 +64,14 @@ pub struct NotepadApp {
     close_after_input: bool,
     settle_editor_focus: bool,
     check_cjk_font: bool,
+    style_initialized: bool,
+    backdrop: Option<(bool, egui::TextureHandle)>,
     #[cfg(target_os = "linux")]
     path_dialog: Option<PathDialog>,
 }
 
 impl NotepadApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        cc.egui_ctx.set_visuals(egui::Visuals::light());
         let has_cjk_font = install_system_font(&cc.egui_ctx);
         let mut app = Self::from_storage(Storage::open_default());
         app.has_cjk_font = has_cjk_font;
@@ -104,6 +110,8 @@ impl NotepadApp {
             close_after_input: false,
             settle_editor_focus: false,
             check_cjk_font: false,
+            style_initialized: false,
+            backdrop: None,
             #[cfg(target_os = "linux")]
             path_dialog: None,
         };
@@ -290,7 +298,7 @@ impl NotepadApp {
             .set_title("导入笔记（复制导入，不覆盖已有笔记）")
             .add_filter(
                 "笔记和备份",
-                &["txt", "md", "markdown", "html", "htm", "json"],
+                &["nebula", "txt", "md", "markdown", "html", "htm", "json"],
             )
             .pick_file()
         else {
@@ -354,28 +362,60 @@ impl NotepadApp {
         snapshot
     }
 
-    fn export_json(&mut self) {
+    fn export_native_backup(&mut self) {
         let filename = format!(
-            "nebulabook-backup-{}.json",
+            "nebulabook-backup-{}.nebula",
             chrono::Local::now().format("%Y%m%d-%H%M%S")
         );
         let Some(path) = rfd::FileDialog::new()
-            .set_title("导出完整 JSON 备份")
-            .add_filter("JSON 备份", &["json"])
+            .set_title("导出完整 Nebula 备份")
+            .add_filter("Nebula 备份", &["nebula"])
             .set_file_name(filename)
             .save_file()
         else {
             self.file_dialog_dismissed();
             return;
         };
-        self.export_json_to_path(&path);
+        self.export_backup_to_path(&path);
     }
 
-    fn export_json_to_path(&mut self, path: &Path) -> bool {
+    fn export_backup_to_path(&mut self, path: &Path) -> bool {
         match export_backup(path, &self.snapshot_with_draft()) {
             Ok(()) => {
                 self.notice = Some(format!(
                     "备份已导出到 {}，包含当前未保存的修改。",
+                    path.display()
+                ));
+                true
+            }
+            Err(error) => {
+                self.error = Some(format!("导出失败：{error}"));
+                false
+            }
+        }
+    }
+
+    fn export_plaintext_json(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("导出明文 JSON（不加密、不混淆）")
+            .add_filter("明文 JSON", &["json"])
+            .set_file_name(format!(
+                "nebulabook-plaintext-{}.json",
+                chrono::Local::now().format("%Y%m%d-%H%M%S")
+            ))
+            .save_file()
+        else {
+            self.file_dialog_dismissed();
+            return;
+        };
+        self.export_plaintext_to_path(&path);
+    }
+
+    fn export_plaintext_to_path(&mut self, path: &Path) -> bool {
+        match export_plaintext_json(path, &self.snapshot_with_draft()) {
+            Ok(()) => {
+                self.notice = Some(format!(
+                    "明文 JSON 已导出到 {}。此文件未加密，请妥善保管。",
                     path.display()
                 ));
                 true
@@ -460,7 +500,8 @@ impl NotepadApp {
         }
         match action {
             PathAction::Import => self.import_from_path(path),
-            PathAction::Backup => self.export_json_to_path(path),
+            PathAction::Backup => self.export_backup_to_path(path),
+            PathAction::PlaintextJson => self.export_plaintext_to_path(path),
             PathAction::Note(markdown) => self.export_selected_to_path(path, markdown),
         }
     }
@@ -476,15 +517,16 @@ impl NotepadApp {
             ui.set_max_width(560.0);
             ui.heading(match dialog.action {
                 PathAction::Import => "直接输入导入文件路径",
-                PathAction::Backup => "直接输入 JSON 备份路径",
+                PathAction::Backup => "直接输入 Nebula 备份路径",
+                PathAction::PlaintextJson => "直接输入明文 JSON 导出路径",
                 PathAction::Note(false) => "直接输入 TXT 导出路径",
                 PathAction::Note(true) => "直接输入 Markdown 导出路径",
             });
-            ui.label("无需桌面 portal。请输入完整路径，例如 /home/me/Documents/notes.json。");
+            ui.label("无需桌面 portal。请输入完整路径，例如 /home/me/Documents/notes.nebula。");
             ui.label("导入先验证再复制；导出只创建新文件，不覆盖已有文件。");
             ui.add(egui::TextEdit::singleline(&mut dialog.path).desired_width(520.0));
             if let Some(error) = &self.error {
-                ui.colored_label(egui::Color32::DARK_RED, error);
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
             ui.horizontal(|ui| {
                 submit = ui.button("确认路径并执行").clicked();
@@ -523,13 +565,14 @@ impl NotepadApp {
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
             .show(ctx, |ui| {
-                ui.label("保存未成功。你可以重试，或先导出包含当前修改的 JSON 备份。");
-                ui.horizontal(|ui| {
+                ui.set_max_width(520.0);
+                ui.label("保存未成功。你可以重试，或先导出包含当前修改的 Nebula 备份。");
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("返回编辑").clicked() {
                         self.confirm_exit = false;
                     }
                     if ui.button("导出备份…").clicked() {
-                        self.export_json();
+                        self.export_native_backup();
                     }
                     #[cfg(target_os = "linux")]
                     if ui.button("输入备份路径…").clicked() {
@@ -610,6 +653,12 @@ impl NotepadApp {
 
     fn frame(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
+        if !self.style_initialized {
+            theme::install(&ctx);
+            // The root Ui was constructed before the new context style.
+            ui.set_style(ctx.style_of(ctx.theme()));
+            self.style_initialized = true;
+        }
         if std::mem::take(&mut self.check_cjk_font) {
             self.has_cjk_font = ctx.fonts_mut(|fonts| {
                 fonts.has_glyphs(&egui::FontId::proportional(16.0), "中文记事本保存回收站")
@@ -668,7 +717,8 @@ impl NotepadApp {
             UiAction::SetDeleted(deleted) => self.set_deleted(deleted),
             UiAction::TogglePin => self.toggle_pin(),
             UiAction::Import => self.import_notes(),
-            UiAction::ExportBackup => self.export_json(),
+            UiAction::ExportBackup => self.export_native_backup(),
+            UiAction::ExportPlaintextJson => self.export_plaintext_json(),
             UiAction::ExportNote(markdown) => self.export_selected(markdown),
             #[cfg(target_os = "linux")]
             UiAction::ManualPath(action) => self.open_path_dialog(action),
@@ -681,127 +731,272 @@ impl NotepadApp {
     }
 
     fn render(&mut self, ui: &mut egui::Ui) {
-        // Buttons are rendered before the editor. Defer mutations and snapshots
-        // until its TextEdit has consumed all text/IME events in this frame.
+        // Apply actions only after TextEdit consumes this frame's keyboard/IME
+        // events. Visual changes must never replace the in-flight editor draft.
         let mut actions = Vec::new();
-        egui::Panel::top("toolbar").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                ui.heading("Nebulabook");
-                ui.separator();
-                ui.add_enabled_ui(self.storage.is_some(), |ui| {
-                    if ui.button("＋ 新建").on_hover_text("Ctrl+N / ⌘N").clicked() {
-                        actions.push(UiAction::NewNote);
-                    }
-                    if ui
-                        .add_enabled(self.selected_id.is_some(), egui::Button::new("保存"))
-                        .on_hover_text("Ctrl+S / ⌘S")
-                        .clicked()
-                    {
-                        actions.push(UiAction::Save);
-                    }
-                    ui.menu_button("导入 / 导出", |ui| {
-                        if ui.button("导入 TXT / Markdown / HTML / JSON…").clicked() {
-                            ui.close();
-                            actions.push(UiAction::Import);
-                        }
-                        ui.separator();
-                        if ui.button("导出全部为 JSON 备份…").clicked() {
-                            ui.close();
-                            actions.push(UiAction::ExportBackup);
-                        }
-                        ui.add_enabled_ui(self.selected_id.is_some(), |ui| {
-                            if ui.button("导出当前笔记为 TXT…").clicked() {
-                                ui.close();
-                                actions.push(UiAction::ExportNote(false));
-                            }
-                            if ui.button("导出当前笔记为 Markdown…").clicked() {
-                                ui.close();
-                                actions.push(UiAction::ExportNote(true));
-                            }
-                        });
-                        #[cfg(target_os = "linux")]
+        let dark = ui.visuals().dark_mode;
+        let p = Palette::for_theme(dark);
+        let width = ui.max_rect().width();
+        let compact = width < 800.0;
+        if self
+            .backdrop
+            .as_ref()
+            .is_none_or(|(theme, _)| *theme != dark)
+        {
+            self.backdrop = Some((
+                dark,
+                ui.ctx().load_texture(
+                    "frosted-app-backdrop",
+                    theme::backdrop_image(dark),
+                    egui::TextureOptions::LINEAR,
+                ),
+            ));
+        }
+        if let Some((_, texture)) = &self.backdrop {
+            ui.painter().image(
+                texture.id(),
+                ui.max_rect(),
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::pos2(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        }
+        egui::Panel::top("toolbar")
+            .frame(
+                egui::Frame::NONE
+                    .fill(p.glass)
+                    .inner_margin(egui::Margin::symmetric(18, 12)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let (logo, _) =
+                        ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+                    ui.painter().rect_filled(logo, 10, p.accent);
+                    let pen = logo.shrink(10.0);
+                    ui.painter().line_segment(
+                        [pen.left_bottom(), pen.right_top()],
+                        egui::Stroke::new(3.0, egui::Color32::WHITE),
+                    );
+                    ui.painter().circle_filled(
+                        pen.right_top(),
+                        2.0,
+                        egui::Color32::from_rgb(180, 226, 247),
+                    );
+                    ui.label(egui::RichText::new("Nebulabook").size(18.0).strong());
+                    ui.add_space(if compact { 4.0 } else { 18.0 });
+                    ui.add_enabled_ui(self.storage.is_some(), |ui| {
+                        if ui
+                            .add(
+                                egui::Button::new(egui::RichText::new("＋ 新建").color(if dark {
+                                    p.text
+                                } else {
+                                    egui::Color32::WHITE
+                                }))
+                                .fill(if dark {
+                                    p.accent_soft
+                                } else {
+                                    p.accent
+                                }),
+                            )
+                            .on_hover_text("新建笔记 · Ctrl+N / ⌘N")
+                            .clicked()
                         {
+                            actions.push(UiAction::NewNote);
+                        }
+                        if ui
+                            .add_enabled(self.selected_id.is_some(), egui::Button::new("保存"))
+                            .on_hover_text("保存到本机 · Ctrl+S / ⌘S")
+                            .clicked()
+                        {
+                            actions.push(UiAction::Save);
+                        }
+                        ui.menu_button("导入 / 导出", |ui| {
+                            if ui
+                                .button("导入 Nebula / TXT / Markdown / HTML / JSON…")
+                                .clicked()
+                            {
+                                ui.close();
+                                actions.push(UiAction::Import);
+                            }
                             ui.separator();
-                            ui.menu_button("直接输入路径（无需 portal）", |ui| {
-                                for (label, action) in [
-                                    ("导入文件…", PathAction::Import),
-                                    ("导出 JSON 备份…", PathAction::Backup),
-                                    ("导出当前笔记 TXT…", PathAction::Note(false)),
-                                    ("导出当前笔记 Markdown…", PathAction::Note(true)),
-                                ] {
-                                    let enabled = !matches!(action, PathAction::Note(_))
-                                        || self.selected_id.is_some();
-                                    if ui.add_enabled(enabled, egui::Button::new(label)).clicked() {
-                                        ui.close();
-                                        actions.push(UiAction::ManualPath(action));
-                                    }
+                            if ui.button("导出全部为 Nebula 备份…").clicked() {
+                                ui.close();
+                                actions.push(UiAction::ExportBackup);
+                            }
+                            if ui
+                                .button("导出明文 JSON（兼容格式）…")
+                                .on_hover_text("不加密、不混淆；请妥善保管导出的文件。")
+                                .clicked()
+                            {
+                                ui.close();
+                                actions.push(UiAction::ExportPlaintextJson);
+                            }
+                            ui.add_enabled_ui(self.selected_id.is_some(), |ui| {
+                                if ui.button("导出当前笔记为 TXT…").clicked() {
+                                    ui.close();
+                                    actions.push(UiAction::ExportNote(false));
+                                }
+                                if ui.button("导出当前笔记为 Markdown…").clicked() {
+                                    ui.close();
+                                    actions.push(UiAction::ExportNote(true));
                                 }
                             });
+                            #[cfg(target_os = "linux")]
+                            {
+                                ui.separator();
+                                ui.menu_button("直接输入路径（无需 portal）", |ui| {
+                                    for (label, action) in [
+                                        ("导入文件…", PathAction::Import),
+                                        ("导出 Nebula 备份…", PathAction::Backup),
+                                        ("导出明文 JSON…", PathAction::PlaintextJson),
+                                        ("导出当前笔记 TXT…", PathAction::Note(false)),
+                                        ("导出当前笔记 Markdown…", PathAction::Note(true)),
+                                    ] {
+                                        let enabled = !matches!(action, PathAction::Note(_))
+                                            || self.selected_id.is_some();
+                                        if ui
+                                            .add_enabled(enabled, egui::Button::new(label))
+                                            .clicked()
+                                        {
+                                            ui.close();
+                                            actions.push(UiAction::ManualPath(action));
+                                        }
+                                    }
+                                });
+                            }
+                            ui.separator();
+                            ui.label("Nebula：轻量混淆与完整性检查，非密码保护。");
+                            ui.label("HTML 导入为纯文本；原始内容保留在备份中。");
+                            ui.label("导出请选择新文件名，不会覆盖已有文件。");
+                        });
+                        ui.add_space(4.0);
+                        if ui
+                            .add(egui::Button::new("笔记").selected(!self.show_trash))
+                            .on_hover_text("返回全部笔记")
+                            .clicked()
+                        {
+                            actions.push(UiAction::ShowTrash(false));
                         }
-                        ui.separator();
-                        ui.label("HTML 导入为纯文本；原始内容保留在备份中。");
-                        ui.label("导出请选择新文件名，不会覆盖已有文件。");
+                        if ui
+                            .add(egui::Button::new("回收站").selected(self.show_trash))
+                            .on_hover_text("查看或恢复已删除的笔记")
+                            .clicked()
+                        {
+                            actions.push(UiAction::ShowTrash(true));
+                        }
                     });
-                });
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label("本地文件 · 离线使用");
-                });
-            });
-            if !self.has_cjk_font {
-                ui.colored_label(
-                    egui::Color32::DARK_RED,
-                    "Chinese font missing. Install Noto Sans CJK, then restart Nebulabook.",
-                );
-            }
-            if let Some(notice) = self.notice.clone() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.label(notice);
-                    if ui.small_button("关闭提示").clicked() {
-                        self.notice = None;
+                    if !compact {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            ui.label(
+                                egui::RichText::new("本地笔记 · 安心离线")
+                                    .size(12.0)
+                                    .color(p.secondary),
+                            );
+                        });
                     }
                 });
-            }
-            if let Some(error) = self.error.clone() {
-                ui.horizontal_wrapped(|ui| {
-                    ui.colored_label(egui::Color32::DARK_RED, error);
-                    if self.storage.is_none() && ui.button("重试打开").clicked() {
-                        actions.push(UiAction::Reopen);
-                    } else if self.storage.is_some()
-                        && self.dirty
-                        && ui.button("重试保存").clicked()
-                    {
-                        actions.push(UiAction::Save);
-                    }
-                });
-            }
-        });
-
-        egui::Panel::bottom("status").show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if self.dirty {
-                    ui.colored_label(egui::Color32::from_rgb(170, 100, 10), "● 未保存");
-                } else {
-                    ui.label(&self.status);
+                if !self.has_cjk_font {
+                    ui.colored_label(
+                        ui.visuals().error_fg_color,
+                        "Chinese font missing. Install Noto Sans CJK, then restart Nebulabook.",
+                    );
                 }
-                ui.separator();
-                ui.label(format!(
-                    "{} 字符 · {} 行",
-                    self.content.chars().count(),
-                    self.content.lines().count().max(1)
-                ));
-                if let Some(storage) = &self.storage {
+                if let Some(notice) = self.notice.clone() {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(notice).size(13.0));
+                        if ui.small_button("关闭提示").clicked() {
+                            self.notice = None;
+                        }
+                    });
+                }
+                if let Some(error) = self.error.clone() {
+                    egui::Frame::NONE
+                        .fill(ui.visuals().error_fg_color.gamma_multiply(0.07))
+                        .corner_radius(9)
+                        .inner_margin(10)
+                        .show(ui, |ui| {
+                            ui.horizontal_wrapped(|ui| {
+                                ui.colored_label(ui.visuals().error_fg_color, error);
+                                if self.storage.is_none() && ui.button("重试打开").clicked() {
+                                    actions.push(UiAction::Reopen);
+                                } else if self.storage.is_some()
+                                    && self.dirty
+                                    && ui.button("重试保存").clicked()
+                                {
+                                    actions.push(UiAction::Save);
+                                }
+                            });
+                        });
+                }
+            });
+
+        egui::Panel::bottom("status")
+            .frame(
+                egui::Frame::NONE
+                    .fill(p.glass)
+                    .inner_margin(egui::Margin::symmetric(18, 7)),
+            )
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let status_color = if self.storage.is_none() {
+                        ui.visuals().error_fg_color
+                    } else if self.dirty {
+                        ui.visuals().warn_fg_color
+                    } else {
+                        p.success
+                    };
+                    let (dot, _) =
+                        ui.allocate_exact_size(egui::vec2(7.0, 7.0), egui::Sense::hover());
+                    ui.painter().circle_filled(dot.center(), 3.0, status_color);
+                    ui.label(
+                        egui::RichText::new(if self.storage.is_none() {
+                            "未打开数据文件"
+                        } else if self.dirty {
+                            "未保存"
+                        } else {
+                            &self.status
+                        })
+                        .size(12.0)
+                        .color(status_color),
+                    );
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        ui.label("数据文件")
-                            .on_hover_text(storage.path().display().to_string());
+                        if !compact {
+                            if let Some(storage) = &self.storage {
+                                ui.label(
+                                    egui::RichText::new("数据文件")
+                                        .size(12.0)
+                                        .color(p.secondary),
+                                )
+                                .on_hover_text(storage.path().display().to_string());
+                                ui.add_space(8.0);
+                            }
+                        }
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "{} 字符 · {} 行",
+                                self.content.chars().count(),
+                                self.content.lines().count().max(1)
+                            ))
+                            .size(12.0)
+                            .color(p.secondary),
+                        );
                     });
-                }
+                });
             });
-        });
 
+        let sidebar_max = if compact {
+            (width * 0.34).clamp(200.0, 260.0)
+        } else {
+            (width - 380.0).clamp(200.0, 360.0)
+        };
         egui::Panel::left("notes")
-            .default_size(245.0)
-            .min_size(180.0)
-            .max_size(420.0)
+            .default_size(272.0)
+            .min_size(200.0)
+            .max_size(sidebar_max)
+            .frame(
+                egui::Frame::NONE
+                    .fill(p.glass)
+                    .inner_margin(egui::Margin::symmetric(14, 18)),
+            )
             .show(ui, |ui| {
                 let search_id = ui.make_persistent_id("note-search");
                 if self.focus_search {
@@ -811,163 +1006,402 @@ impl NotepadApp {
                 ui.add(
                     egui::TextEdit::singleline(&mut self.query)
                         .id(search_id)
+                        .font(egui::FontId::proportional(14.0))
                         .hint_text("搜索标题和正文…")
+                        .margin(egui::Margin::symmetric(11, 9))
                         .desired_width(f32::INFINITY),
-                );
-                ui.horizontal(|ui| {
-                    if ui.selectable_label(!self.show_trash, "笔记").clicked() {
-                        actions.push(UiAction::ShowTrash(false));
-                    }
-                    if ui.selectable_label(self.show_trash, "回收站").clicked() {
-                        actions.push(UiAction::ShowTrash(true));
-                    }
-                });
-                ui.separator();
+                )
+                .on_hover_text("搜索笔记 · Ctrl+F / ⌘F");
+                ui.add_space(9.0);
                 let notes: Vec<_> = self
                     .visible_notes()
                     .into_iter()
-                    .map(|note| (note.id.clone(), note.title.clone(), note.is_pinned))
+                    .map(|note| {
+                        (
+                            note.id.clone(),
+                            note.title.clone(),
+                            theme::note_preview(&note.content),
+                            note.is_pinned,
+                        )
+                    })
                     .collect();
-                ui.label(format!("{} 篇", notes.len()));
-                egui::ScrollArea::vertical().show_rows(ui, 34.0, notes.len(), |ui, rows| {
-                    for (id, title, pinned) in &notes[rows] {
-                        let title = if title.trim().is_empty() {
-                            "无标题笔记"
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(if self.query.trim().is_empty() {
+                            if self.show_trash {
+                                "最近删除"
+                            } else {
+                                "我的笔记"
+                            }
                         } else {
-                            title.trim()
-                        };
-                        let label = if *pinned {
-                            format!("↑ {title}")
-                        } else {
-                            title.to_string()
-                        };
-                        let selected = self.selected_id.as_ref() == Some(id);
-                        let response = ui.add_sized(
-                            [ui.available_width(), 34.0],
-                            egui::Button::new(label).truncate().selected(selected),
+                            "搜索结果"
+                        })
+                        .size(12.0)
+                        .color(p.secondary),
+                    );
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{} 篇", notes.len()))
+                                .size(12.0)
+                                .color(p.secondary),
                         );
-                        if response.clicked() {
-                            actions.push(UiAction::Select(id.clone()));
-                        }
-                    }
-                });
-            });
-
-        egui::CentralPanel::default().show(ui, |ui| {
-            if self.storage.is_none() {
-                ui.centered_and_justified(|ui| {
-                    ui.label("请先解决上方文件错误。原有数据不会被覆盖。");
-                });
-                return;
-            }
-            let Some(id) = self.selected_id.clone() else {
-                ui.vertical_centered(|ui| {
-                    ui.add_space(70.0);
-                    ui.heading(if self.show_trash {
-                        "回收站为空"
-                    } else {
-                        "写下第一个想法"
                     });
-                    if !self.show_trash && ui.button("新建笔记").clicked() {
-                        actions.push(UiAction::NewNote);
-                    }
                 });
-                return;
-            };
-            let note = self
-                .notebook
-                .notes
-                .iter()
-                .find(|note| note.id == id)
-                .unwrap();
-            let deleted = note.is_deleted;
-            let pinned = note.is_pinned;
-            ui.horizontal(|ui| {
-                if deleted {
-                    ui.label("回收站中的笔记只读");
-                    if ui.button("恢复笔记").clicked() {
-                        actions.push(UiAction::SetDeleted(false));
-                    }
-                } else {
-                    if ui
-                        .button(if pinned { "取消置顶" } else { "置顶" })
-                        .clicked()
-                    {
-                        actions.push(UiAction::TogglePin);
-                    }
-                    if ui.button("移入回收站").clicked() {
-                        actions.push(UiAction::SetDeleted(true));
+                ui.add_space(2.0);
+                if notes.is_empty() {
+                    ui.add_space(24.0);
+                    ui.label(
+                        egui::RichText::new(if self.query.trim().is_empty() {
+                            if self.show_trash {
+                                "这里暂时没有笔记"
+                            } else {
+                                "灵感，从一页空白开始"
+                            }
+                        } else {
+                            "没有匹配的笔记"
+                        })
+                        .size(13.0)
+                        .color(p.secondary),
+                    );
+                    if !self.query.trim().is_empty() && ui.button("清除搜索").clicked() {
+                        self.query.clear();
                     }
                 }
-            });
-            ui.add_enabled_ui(!deleted, |ui| {
-                let title_id = ui.make_persistent_id(("note-title", &id));
-                if self.focus_title {
-                    ui.memory_mut(|memory| memory.request_focus(title_id));
-                    self.focus_title = false;
-                }
-                let title = ui.add(
-                    egui::TextEdit::singleline(&mut self.title)
-                        .id(title_id)
-                        .hint_text("笔记标题")
-                        .font(egui::TextStyle::Heading)
-                        .desired_width(f32::INFINITY),
-                );
-                if title.changed() {
-                    self.edited();
-                }
-                if title.lost_focus() {
-                    // egui moves focus before TextEdit handles events, but leaves
-                    // the navigation Tab for the newly focused multiline editor.
-                    // Consume only that first Tab, not indentation after a click
-                    // or subsequent Tabs pressed after entering the body.
-                    ui.input_mut(|input| {
-                        if let Some(index) = input.events.iter().position(|event| {
-                            matches!(event, egui::Event::PointerButton { pressed: true, .. })
-                                || matches!(
-                                    event,
-                                    egui::Event::Key {
-                                        key: egui::Key::Tab,
-                                        pressed: true,
-                                        ..
-                                    }
-                                )
-                        }) {
-                            if matches!(&input.events[index], egui::Event::Key {
-                                key: egui::Key::Tab, pressed: true, modifiers, ..
-                            } if !modifiers.shift)
-                            {
-                                input.events.remove(index);
+                egui::ScrollArea::vertical()
+                    .auto_shrink([false, false])
+                    .show_rows(ui, 72.0, notes.len(), |ui, rows| {
+                        for (id, title, preview, pinned) in &notes[rows] {
+                            let title = if title.trim().is_empty() {
+                                "无标题笔记"
+                            } else {
+                                title.trim()
+                            };
+                            let selected = self.selected_id.as_ref() == Some(id);
+                            let response =
+                                Self::note_card(ui, id, title, preview, *pinned, selected, p);
+                            if response.clicked() {
+                                actions.push(UiAction::Select(id.clone()));
                             }
                         }
                     });
-                }
-                ui.separator();
-                egui::ScrollArea::vertical()
-                    .id_salt(("editor-scroll", &id))
+            });
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE.inner_margin(if compact { 12 } else { 20 }))
+            .show(ui, |ui| {
+                egui::Frame::NONE
+                    .fill(p.paper)
+                    .stroke(egui::Stroke::new(1.0, p.edge))
+                    .corner_radius(18)
+                    .shadow(egui::Shadow {
+                        offset: [0, 6],
+                        blur: 18,
+                        spread: 0,
+                        color: egui::Color32::from_black_alpha(if dark { 30 } else { 12 }),
+                    })
+                    .inner_margin(if compact { 18 } else { 28 })
                     .show(ui, |ui| {
-                        let response = ui.add_sized(
-                            [ui.available_width(), ui.available_height().max(200.0)],
-                            egui::TextEdit::multiline(&mut self.content)
-                                .id_salt(("note-content", &id))
-                                .hint_text("开始书写…")
-                                .font(egui::TextStyle::Body)
-                                .desired_width(f32::INFINITY)
-                                .lock_focus(true),
-                        );
-                        if response.gained_focus() {
-                            self.settle_editor_focus = true;
-                            ui.ctx().request_repaint();
+                        ui.set_min_size(ui.available_size());
+                        if self.storage.is_none() {
+                            Self::empty_state(
+                                ui,
+                                "笔记暂时无法打开",
+                                "请先解决上方文件错误。原有数据不会被覆盖。",
+                                p,
+                            );
+                            return;
                         }
-                        if response.changed() {
-                            self.edited();
-                        }
+                        let Some(id) = self.selected_id.clone() else {
+                            Self::empty_state(
+                                ui,
+                                if self.show_trash {
+                                    "回收站为空"
+                                } else {
+                                    "留一处空白，安放想法"
+                                },
+                                if self.show_trash {
+                                    "移入回收站的笔记可以随时恢复。"
+                                } else {
+                                    "随手记录，自动保存。所有内容只在你的设备上。"
+                                },
+                                p,
+                            );
+                            if !self.show_trash {
+                                ui.vertical_centered(|ui| {
+                                    if ui.button("新建笔记").clicked() {
+                                        actions.push(UiAction::NewNote);
+                                    }
+                                    ui.label(
+                                        egui::RichText::new("Ctrl+N / ⌘N")
+                                            .size(12.0)
+                                            .color(p.secondary),
+                                    );
+                                });
+                            }
+                            return;
+                        };
+                        let note = self
+                            .notebook
+                            .notes
+                            .iter()
+                            .find(|note| note.id == id)
+                            .unwrap();
+                        let deleted = note.is_deleted;
+                        let pinned = note.is_pinned;
+                        let updated = chrono::DateTime::parse_from_rfc3339(&note.updated_at)
+                            .ok()
+                            .map(|date| {
+                                date.with_timezone(&chrono::Local)
+                                    .format("%Y年%m月%d日")
+                                    .to_string()
+                            })
+                            .unwrap_or_default();
+                        ui.horizontal_wrapped(|ui| {
+                            if deleted {
+                                ui.label(
+                                    egui::RichText::new("回收站 · 只读")
+                                        .size(12.0)
+                                        .color(p.secondary),
+                                );
+                                if ui.button("恢复笔记").clicked() {
+                                    actions.push(UiAction::SetDeleted(false));
+                                }
+                            } else {
+                                if ui
+                                    .button(if pinned { "取消置顶" } else { "置顶" })
+                                    .clicked()
+                                {
+                                    actions.push(UiAction::TogglePin);
+                                }
+                                if ui.button("移入回收站").clicked() {
+                                    actions.push(UiAction::SetDeleted(true));
+                                }
+                            }
+                            if !compact {
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(
+                                            egui::RichText::new(updated)
+                                                .size(12.0)
+                                                .color(p.secondary),
+                                        );
+                                    },
+                                );
+                            }
+                        });
+                        ui.add_space(if compact { 8.0 } else { 16.0 });
+                        // Disable editing, not the surrounding scroll area: long
+                        // trashed notes must remain readable without restoring.
+                        ui.scope(|ui| {
+                            let title_id = ui.make_persistent_id(("note-title", &id));
+                            if self.focus_title {
+                                ui.memory_mut(|memory| memory.request_focus(title_id));
+                                self.focus_title = false;
+                            }
+                            let title = ui.add(
+                                egui::TextEdit::singleline(&mut self.title)
+                                    .id(title_id)
+                                    .interactive(!deleted)
+                                    .hint_text("笔记标题")
+                                    .font(egui::FontId::proportional(if compact {
+                                        24.0
+                                    } else {
+                                        28.0
+                                    }))
+                                    .frame(egui::Frame::NONE)
+                                    .margin(egui::Margin::symmetric(0, 8))
+                                    .desired_width(f32::INFINITY),
+                            );
+                            if title.changed() {
+                                self.edited();
+                            }
+                            if title.lost_focus() {
+                                // egui moves focus before TextEdit handles events, but leaves
+                                // the navigation Tab for the newly focused multiline editor.
+                                // Consume only that first Tab, not indentation after a click
+                                // or subsequent Tabs pressed after entering the body.
+                                ui.input_mut(|input| {
+                                    if let Some(index) = input.events.iter().position(|event| {
+                                        matches!(
+                                            event,
+                                            egui::Event::PointerButton { pressed: true, .. }
+                                        ) || matches!(
+                                            event,
+                                            egui::Event::Key {
+                                                key: egui::Key::Tab,
+                                                pressed: true,
+                                                ..
+                                            }
+                                        )
+                                    }) {
+                                        if matches!(&input.events[index], egui::Event::Key {
+                                key: egui::Key::Tab, pressed: true, modifiers, ..
+                            } if !modifiers.shift)
+                                        {
+                                            input.events.remove(index);
+                                        }
+                                    }
+                                });
+                            }
+                            ui.add_space(10.0);
+                            egui::ScrollArea::vertical()
+                                .id_salt(("editor-scroll", &id))
+                                .show(ui, |ui| {
+                                    let response = ui.add_sized(
+                                        [ui.available_width(), ui.available_height().max(32.0)],
+                                        egui::TextEdit::multiline(&mut self.content)
+                                            .id_salt(("note-content", &id))
+                                            .interactive(!deleted)
+                                            .hint_text("开始书写…")
+                                            .font(egui::FontId::proportional(16.0))
+                                            .frame(egui::Frame::NONE)
+                                            .margin(egui::Margin::ZERO)
+                                            .desired_width(f32::INFINITY)
+                                            .lock_focus(true),
+                                    );
+                                    if response.gained_focus() {
+                                        self.settle_editor_focus = true;
+                                        ui.ctx().request_repaint();
+                                    }
+                                    if response.changed() {
+                                        self.edited();
+                                    }
+                                });
+                        });
                     });
             });
-        });
         for action in actions {
             self.apply_action(action);
         }
+    }
+
+    fn note_card(
+        ui: &mut egui::Ui,
+        id: &str,
+        title: &str,
+        preview: &str,
+        pinned: bool,
+        selected: bool,
+        p: Palette,
+    ) -> egui::Response {
+        let (rect, _) =
+            ui.allocate_exact_size(egui::vec2(ui.available_width(), 72.0), egui::Sense::hover());
+        let response = ui.interact(
+            rect,
+            ui.make_persistent_id(("note-card", id)),
+            egui::Sense::click(),
+        );
+        response.widget_info(|| {
+            egui::WidgetInfo::selected(
+                egui::WidgetType::SelectableLabel,
+                ui.is_enabled(),
+                selected,
+                title,
+            )
+        });
+        if ui.is_rect_visible(rect) {
+            let fill = if selected {
+                p.paper
+            } else if response.hovered() {
+                p.glass
+            } else {
+                egui::Color32::TRANSPARENT
+            };
+            ui.painter().rect_filled(rect, 12, fill);
+            if selected || response.has_focus() {
+                ui.painter().rect_stroke(
+                    rect,
+                    12,
+                    egui::Stroke::new(
+                        if response.has_focus() { 1.5 } else { 1.0 },
+                        if response.has_focus() {
+                            p.accent
+                        } else {
+                            p.edge
+                        },
+                    ),
+                    egui::StrokeKind::Inside,
+                );
+                ui.painter().rect_filled(
+                    egui::Rect::from_min_size(
+                        rect.left_top() + egui::vec2(0.0, 18.0),
+                        egui::vec2(3.0, 36.0),
+                    ),
+                    2,
+                    p.accent,
+                );
+            }
+            let text_width = rect.width() - if pinned { 42.0 } else { 28.0 };
+            let title_galley = egui::WidgetText::from(
+                egui::RichText::new(title).size(15.0).strong().color(p.text),
+            )
+            .into_galley(
+                ui,
+                Some(egui::TextWrapMode::Truncate),
+                text_width,
+                egui::TextStyle::Body,
+            );
+            ui.painter().galley(
+                rect.left_top() + egui::vec2(14.0, 12.0),
+                title_galley,
+                p.text,
+            );
+            let preview_galley =
+                egui::WidgetText::from(egui::RichText::new(preview).size(12.0).color(p.secondary))
+                    .into_galley(
+                        ui,
+                        Some(egui::TextWrapMode::Truncate),
+                        rect.width() - 28.0,
+                        egui::TextStyle::Small,
+                    );
+            ui.painter().galley(
+                rect.left_top() + egui::vec2(14.0, 40.0),
+                preview_galley,
+                p.secondary,
+            );
+            if pinned {
+                let c = rect.right_top() + egui::vec2(-16.0, 21.0);
+                ui.painter().circle_filled(c, 3.0, p.accent);
+                ui.painter().line_segment(
+                    [c, c + egui::vec2(0.0, 7.0)],
+                    egui::Stroke::new(1.0, p.accent),
+                );
+            }
+        }
+        response.on_hover_text(if pinned {
+            format!("已置顶 · {title}")
+        } else {
+            title.to_string()
+        })
+    }
+
+    fn empty_state(ui: &mut egui::Ui, title: &str, subtitle: &str, p: Palette) {
+        ui.add_space((ui.available_height() * 0.23).min(100.0));
+        ui.vertical_centered(|ui| {
+            let (rect, _) = ui.allocate_exact_size(egui::vec2(64.0, 64.0), egui::Sense::hover());
+            ui.painter().rect_filled(rect, 20, p.accent_soft);
+            let page = rect.shrink2(egui::vec2(20.0, 16.0));
+            ui.painter().rect_stroke(
+                page,
+                4,
+                egui::Stroke::new(1.5, p.accent),
+                egui::StrokeKind::Inside,
+            );
+            for y in [10.0, 16.0, 22.0] {
+                ui.painter().line_segment(
+                    [
+                        page.left_top() + egui::vec2(6.0, y),
+                        page.left_top() + egui::vec2(18.0, y),
+                    ],
+                    egui::Stroke::new(1.2, p.accent),
+                );
+            }
+            ui.add_space(12.0);
+            ui.label(egui::RichText::new(title).size(22.0).strong().color(p.text));
+            ui.label(egui::RichText::new(subtitle).size(13.0).color(p.secondary));
+            ui.add_space(14.0);
+        });
     }
 }
 
@@ -1001,6 +1435,10 @@ impl eframe::App for NotepadApp {
     }
 }
 
+#[cfg(all(test, target_os = "linux"))]
+#[path = "visual_tests.rs"]
+mod visual_tests;
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1008,7 +1446,7 @@ mod tests {
 
     fn app() -> (TempDir, NotepadApp) {
         let directory = TempDir::new().unwrap();
-        let app = NotepadApp::from_storage(Storage::open(directory.path().join("notes.json")));
+        let app = NotepadApp::from_storage(Storage::open(directory.path().join("notes.nebula")));
         assert!(app.storage.is_some());
         (directory, app)
     }
@@ -1082,6 +1520,7 @@ mod tests {
         output
             .shapes
             .iter()
+            .rev()
             .find_map(|shape| {
                 if let egui::Shape::Text(text) = &shape.shape {
                     if text.galley.job.text == label {
@@ -1095,8 +1534,9 @@ mod tests {
 
     fn focus_body_and_type(app: &mut NotepadApp, ctx: &egui::Context) {
         app.focus_title = false;
-        render_input(app, ctx, Vec::new());
-        render_input(app, ctx, click_at(egui::pos2(400.0, 180.0)));
+        let output = render_input(app, ctx, Vec::new());
+        let body = label_position(&output, "before") + egui::vec2(28.0, 0.0);
+        render_input(app, ctx, click_at(body));
         render_input(app, ctx, vec![egui::Event::Text(" FIRST".into())]);
         assert_eq!(app.content, "before FIRST");
     }
@@ -1162,7 +1602,7 @@ mod tests {
             }
             assert_eq!(app.title, "Linux smoke title", "mode={mode}");
             assert_eq!(app.content, "Linux smoke body 123", "mode={mode}");
-            let saved: Notebook = serde_json::from_slice(
+            let saved: Notebook = crate::nebula_format::decode(
                 &std::fs::read(app.storage.as_ref().unwrap().path()).unwrap(),
             )
             .unwrap();
@@ -1217,8 +1657,8 @@ mod tests {
         let (_directory, mut app) = app();
         app.new_note();
         let ctx = egui::Context::default();
-        render_input(&mut app, &ctx, Vec::new());
-        let mut events = click_at(egui::pos2(400.0, 180.0));
+        let output = render_input(&mut app, &ctx, Vec::new());
+        let mut events = click_at(label_position(&output, "开始书写…"));
         events.extend([
             key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
             key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
@@ -1694,8 +2134,8 @@ mod tests {
         let (_directory, mut app) = app();
         app.new_note();
         let ctx = egui::Context::default();
-        render_input(&mut app, &ctx, Vec::new());
-        let mut events = click_at(egui::pos2(400.0, 180.0));
+        let output = render_input(&mut app, &ctx, Vec::new());
+        let mut events = click_at(label_position(&output, "开始书写…"));
         events.extend([
             key_event(egui::Key::Tab, true, egui::Modifiers::NONE),
             key_event(egui::Key::Tab, false, egui::Modifiers::NONE),
@@ -1933,9 +2373,10 @@ mod tests {
         app.edited();
         fail_future_saves(&app);
         assert!(!app.can_close());
-        let backup = directory.path().join("rescue.json");
+        let backup = directory.path().join("rescue.nebula");
         assert!(app.submit_path(PathAction::Backup, backup.to_str().unwrap()));
-        let rescued: Notebook = serde_json::from_slice(&std::fs::read(&backup).unwrap()).unwrap();
+        let rescued: Notebook =
+            crate::nebula_format::decode(&std::fs::read(&backup).unwrap()).unwrap();
         assert_eq!(rescued.notes[0].content, "unsaved rescue 中文");
         assert!(app.dirty);
         assert!(!app.can_close());
@@ -1948,9 +2389,24 @@ mod tests {
         assert!(!app.submit_path(PathAction::Backup, backup.to_str().unwrap()));
         assert!(app.error.as_ref().unwrap().contains("already exists"));
         assert_eq!(
-            serde_json::from_slice::<Notebook>(&std::fs::read(backup).unwrap()).unwrap(),
+            crate::nebula_format::decode(&std::fs::read(backup).unwrap()).unwrap(),
             rescued
         );
+        let plaintext = directory.path().join("explicit-plaintext.json");
+        assert!(app.submit_path(PathAction::PlaintextJson, plaintext.to_str().unwrap()));
+        let mut decoded: Notebook =
+            serde_json::from_slice(&std::fs::read(plaintext).unwrap()).unwrap();
+        // Each rescue snapshots the still-unsaved draft at its own timestamp.
+        decoded.validate().unwrap();
+        assert_eq!(decoded.notes.len(), rescued.notes.len());
+        for (actual, expected) in decoded.notes.iter_mut().zip(&rescued.notes) {
+            actual.updated_at.clone_from(&expected.updated_at);
+        }
+        assert_eq!(decoded, rescued);
+        let misleading = directory.path().join("not-a-nebula-backup.json");
+        assert!(!app.submit_path(PathAction::Backup, misleading.to_str().unwrap()));
+        assert!(!misleading.exists());
+        assert!(app.dirty);
     }
 
     #[cfg(target_os = "linux")]
@@ -2011,6 +2467,114 @@ mod tests {
                     .has_glyphs(&egui::FontId::monospace(16.0), "中文记事本保存回收站")));
             });
         eprintln!("CJK glyph check passed for proportional and monospace text");
+    }
+
+    #[test]
+    fn long_trashed_notes_scroll_but_cannot_be_edited() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        app.title = "Read-only note".into();
+        app.content = "A long archived paragraph remains readable.\n".repeat(100);
+        app.edited();
+        app.set_deleted(true);
+        app.toggle_trash(true);
+        let content = app.content.clone();
+        let ctx = egui::Context::default();
+        let body_y = |output: &egui::FullOutput| {
+            output
+                .shapes
+                .iter()
+                .find_map(|shape| {
+                    if let egui::Shape::Text(text) = &shape.shape {
+                        if text.galley.job.text == content {
+                            return Some(text.pos.y);
+                        }
+                    }
+                    None
+                })
+                .unwrap()
+        };
+        render_input(&mut app, &ctx, Vec::new());
+        let output = render_input(
+            &mut app,
+            &ctx,
+            vec![egui::Event::PointerMoved(egui::pos2(500.0, 320.0))],
+        );
+        let before = body_y(&output);
+        render_input(
+            &mut app,
+            &ctx,
+            vec![
+                egui::Event::PointerMoved(egui::pos2(500.0, 320.0)),
+                egui::Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Point,
+                    delta: egui::vec2(0.0, -200.0),
+                    phase: egui::TouchPhase::Move,
+                    modifiers: egui::Modifiers::NONE,
+                },
+            ],
+        );
+        let mut output = render_input(&mut app, &ctx, Vec::new());
+        for _ in 0..5 {
+            output = render_input(&mut app, &ctx, Vec::new());
+        }
+        assert!(body_y(&output) < before, "Read-only body did not scroll");
+        let mut events = click_at(egui::pos2(500.0, 320.0));
+        events.push(egui::Event::Text("must not edit".into()));
+        render_input(&mut app, &ctx, events);
+        assert_eq!(app.content, content);
+        assert_eq!(app.title, "Read-only note");
+        assert!(!app.dirty);
+        assert!(app.notebook.notes[0].is_deleted);
+    }
+
+    #[test]
+    fn theme_and_resize_preserve_draft_and_reuse_the_cached_backdrop() {
+        let (_directory, mut app) = app();
+        app.new_note();
+        app.title = "长标题与中文内容 remain unchanged".into();
+        app.content = "中文正文与 English\n".repeat(100);
+        app.edited();
+        app.focus_title = false;
+        let original_id = app.selected_id.clone();
+        let original_text = app.content.clone();
+        let ctx = egui::Context::default();
+        let mut light_texture = None;
+        for (size, dark) in [
+            ([1000.0, 700.0], false),
+            ([640.0, 420.0], false),
+            ([1200.0, 800.0], false),
+            ([640.0, 420.0], true),
+        ] {
+            let viewport = egui::Rect::from_min_size(egui::Pos2::ZERO, size.into());
+            let output = run_headless(
+                &ctx,
+                egui::RawInput {
+                    screen_rect: Some(viewport),
+                    system_theme: Some(if dark {
+                        egui::Theme::Dark
+                    } else {
+                        egui::Theme::Light
+                    }),
+                    ..Default::default()
+                },
+                |ui| app.frame(ui),
+            );
+            let (backdrop_dark, handle) = app.backdrop.as_ref().unwrap();
+            assert_eq!(*backdrop_dark, dark);
+            if !dark {
+                assert_eq!(*light_texture.get_or_insert(handle.id()), handle.id());
+            }
+            for label in ["＋ 新建", "保存", "导入 / 导出", "回收站"] {
+                assert!(
+                    viewport.contains(label_position(&output, label)),
+                    "{label} at {size:?}"
+                );
+            }
+            assert_eq!(app.selected_id, original_id);
+            assert_eq!(app.content, original_text);
+            assert!(app.dirty);
+        }
     }
 
     #[test]

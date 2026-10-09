@@ -5,7 +5,7 @@ use nebulabook::storage::Storage;
 #[test]
 fn legacy_migration_edit_trash_backup_and_reopen_are_non_destructive() {
     let directory = tempfile::tempdir().unwrap();
-    let path = directory.path().join("notebook.json");
+    let path = directory.path().join("notebook.nebula");
     let legacy = serde_json::json!({
         "notes": [{
             "id": "old-note", "userId": "anonymous-user", "folderId": null,
@@ -37,7 +37,7 @@ fn legacy_migration_edit_trash_backup_and_reopen_are_non_destructive() {
     notebook.notes[0].update("原生编辑".into(), String::new());
     notebook.notes[0].set_deleted(true);
     storage.save(&notebook).unwrap();
-    let backup = directory.path().join("export.json");
+    let backup = directory.path().join("export.nebula");
     export_backup(&backup, &notebook).unwrap();
     drop(storage);
     let (_, reopened) = Storage::open(path).unwrap();

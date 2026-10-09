@@ -28,6 +28,19 @@ bash scripts/smoke-linux.sh target/release/nebulabook
 
 环境若禁止创建 Unix socket，显示服务器不能启动；不能将测试跳过写成 GUI 通过。仅数据层测试仍可运行。
 
+### 原生界面离屏视觉复核
+
+Linux 安装 Mesa EGL 运行库和中文字体后，也可以在不启动显示服务器的情况下生成实际 egui/Glow 像素：
+
+```sh
+NEBULABOOK_VISUAL_OUTPUT="$PWD/visual-output" MESA_SHADER_CACHE_DISABLE=true \
+  cargo test --locked --lib app::visual_tests::capture_native_egui_visuals -- --ignored --nocapture
+```
+
+该测试默认忽略，只在测试二进制链接 `libEGL.so.1`。输出 PPM，使用系统图像工具转为 PNG 后查看。包含合成中文笔记、浅深色、窄窗口、2× DPI、菜单和错误恢复场景；不是原生窗口/显示服务器测试，不替代上方真实 GUI 门禁。
+
+真实 X11 烟测还运行独立 Python `.nebula` 测试读取器的已知向量和防篡改检查，以核对最终标题/正文的精确持久化值。截图清单 `x11-screenshots.json` 记录各场景、尺寸、文件 SHA256 与人工验收边界；截图内容全部来自本轮隔离数据目录。Wayland 不宣称已做截图或键盘流程验收。
+
 ## Linux 打包
 
 正式发行必须在与目标架构相同的 GNU/Linux 上构建；CI 固定 Ubuntu 22.04 x64 / ARM64。示例：

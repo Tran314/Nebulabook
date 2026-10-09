@@ -5,5 +5,8 @@ pub mod app;
 mod fonts;
 pub mod import_export;
 pub mod model;
+pub mod nebula_format;
 pub mod runtime;
 pub mod storage;
+#[cfg(feature = "desktop")]
+mod theme;

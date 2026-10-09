@@ -1,6 +1,7 @@
 //! Explicit, local-only migration and exports. Parsing never changes the current
 //! notebook; the fully validated candidate is installed only after every check.
 use crate::model::{Folder, Note, Notebook, Tag};
+use crate::nebula_format;
 use crate::storage::MAX_NOTEBOOK_BYTES;
 use serde::Deserialize;
 use serde_json::Value;
@@ -10,7 +11,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use uuid::Uuid;
 
-pub const MAX_IMPORT_BYTES: u64 = MAX_NOTEBOOK_BYTES;
+pub const MAX_IMPORT_BYTES: u64 = nebula_format::MAX_FILE_BYTES;
 pub const MAX_HTML_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -60,39 +61,51 @@ pub fn import_bytes(
     if bytes.len() as u64 > MAX_IMPORT_BYTES {
         return Err("Import exceeds the 64 MiB file limit.".into());
     }
-    let source =
-        std::str::from_utf8(bytes).map_err(|_| "Import must be valid UTF-8 text.".to_string())?;
-    let text = source.strip_prefix('\u{feff}').unwrap_or(source);
     let extension = Path::new(filename)
         .extension()
         .and_then(|value| value.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
     let mut warnings = Vec::new();
-    let mut imported = match extension.as_str() {
-        "json" => parse_json(text, &mut warnings)?,
-        "txt" | "md" | "markdown" | "html" | "htm" => {
-            let title = Path::new(filename)
-                .file_stem()
-                .and_then(|value| value.to_str())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or("Imported note");
-            let html = matches!(extension.as_str(), "html" | "htm");
-            let content = if html {
-                html_to_text(text)?
-            } else {
-                text.to_string()
-            };
-            let mut note = Note::new(title.to_string(), content);
-            if html {
-                note.original_html = Some(source.to_string());
-                warnings.push("HTML was converted to editable text without executing scripts or loading remote resources. The original HTML is retained in JSON backups.".into());
-            }
-            let mut imported = Notebook::default();
-            imported.notes.push(note);
-            imported
+    let mut imported = if extension == "nebula" {
+        nebula_format::decode(bytes)?
+    } else {
+        if bytes.len() as u64 > MAX_NOTEBOOK_BYTES {
+            return Err("Import exceeds the 64 MiB file limit.".into());
         }
-        _ => return Err("Unsupported import format. Choose TXT, Markdown, HTML, or JSON.".into()),
+        let source = std::str::from_utf8(bytes)
+            .map_err(|_| "Import must be valid UTF-8 text.".to_string())?;
+        let text = source.strip_prefix('\u{feff}').unwrap_or(source);
+        match extension.as_str() {
+            "json" => parse_json(text, &mut warnings)?,
+            "txt" | "md" | "markdown" | "html" | "htm" => {
+                let title = Path::new(filename)
+                    .file_stem()
+                    .and_then(|value| value.to_str())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or("Imported note");
+                let html = matches!(extension.as_str(), "html" | "htm");
+                let content = if html {
+                    html_to_text(text)?
+                } else {
+                    text.to_string()
+                };
+                let mut note = Note::new(title.to_string(), content);
+                if html {
+                    note.original_html = Some(source.to_string());
+                    warnings.push("HTML was converted to editable text without executing scripts or loading remote resources. The original HTML is retained in complete .nebula or explicit JSON backups.".into());
+                }
+                let mut imported = Notebook::default();
+                imported.notes.push(note);
+                imported
+            }
+            _ => {
+                return Err(
+                    "Unsupported import format. Choose NEBULA, TXT, Markdown, HTML, or JSON."
+                        .into(),
+                )
+            }
+        }
     };
 
     imported
@@ -153,29 +166,43 @@ pub fn import_bytes(
         .map_err(|error| format!("Import would create an invalid notebook: {error}"))?;
     let serialized = serde_json::to_vec_pretty(&candidate)
         .map_err(|error| format!("Cannot encode imported notebook: {error}"))?;
-    if serialized.len() as u64 > MAX_IMPORT_BYTES {
+    if serialized.len() as u64 > MAX_NOTEBOOK_BYTES {
         return Err(
             "Import would exceed the notebook's 64 MiB storage limit. Nothing was imported.".into(),
         );
     }
+    // Check the exact native envelope budget before installing the candidate.
+    nebula_format::encode(&candidate)?;
     *notebook = candidate;
     Ok(report)
 }
 
+/// Complete portable default backup; plaintext JSON requires its explicit API.
 pub fn export_backup(path: &Path, notebook: &Notebook) -> Result<(), String> {
+    if !path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("nebula"))
+    {
+        return Err("完整备份请使用 .nebula 后缀；TXT / Markdown / JSON 是显式明文导出。".into());
+    }
+    write_new(path, &nebula_format::encode(notebook)?)
+}
+
+/// Explicit compatibility export. This file exposes the complete notebook as plaintext.
+pub fn export_plaintext_json(path: &Path, notebook: &Notebook) -> Result<(), String> {
     notebook
         .validate()
         .map_err(|error| format!("Cannot export invalid notebook: {error}"))?;
     let bytes = serde_json::to_vec_pretty(notebook)
         .map_err(|error| format!("Cannot encode backup: {error}"))?;
-    if bytes.len() as u64 > MAX_IMPORT_BYTES {
+    if bytes.len() as u64 > MAX_NOTEBOOK_BYTES {
         return Err("Backup exceeds the 64 MiB storage limit.".into());
     }
     write_new(path, &bytes)
 }
 
 /// Markdown is exported as the editor's Markdown source, never rendered HTML.
-/// A full JSON backup is required to retain IDs, timestamps, tags and raw HTML.
+/// A full .nebula backup is required to retain IDs, timestamps, tags and raw HTML.
 pub fn export_note(path: &Path, note: &Note, format: NoteFormat) -> Result<(), String> {
     let text = match format {
         NoteFormat::Text | NoteFormat::Markdown => &note.content,
@@ -382,6 +409,11 @@ impl<'de> Deserialize<'de> for UniqueJson {
             ) -> Result<Self::Value, A::Error> {
                 let mut values = Vec::new();
                 while let Some(value) = sequence.next_element::<UniqueJson>()? {
+                    if values.len() >= crate::model::MAX_RECORDS {
+                        return Err(serde::de::Error::custom(
+                            "JSON array exceeds the 100000 item limit",
+                        ));
+                    }
                     values.push(value.0);
                 }
                 Ok(UniqueJson(Value::Array(values)))
@@ -392,6 +424,11 @@ impl<'de> Deserialize<'de> for UniqueJson {
             ) -> Result<Self::Value, A::Error> {
                 let mut values = serde_json::Map::new();
                 while let Some(key) = map.next_key::<String>()? {
+                    if values.len() >= crate::model::MAX_RECORDS {
+                        return Err(serde::de::Error::custom(
+                            "JSON object exceeds the 100000 field limit",
+                        ));
+                    }
                     if values.contains_key(&key) {
                         return Err(serde::de::Error::custom(format!(
                             "duplicate JSON key: {key}"
@@ -406,10 +443,14 @@ impl<'de> Deserialize<'de> for UniqueJson {
     }
 }
 
-fn parse_json(text: &str, warnings: &mut Vec<String>) -> Result<Notebook, String> {
-    let value = serde_json::from_str::<UniqueJson>(text)
-        .map_err(|error| format!("Invalid JSON: {error}"))?
-        .0;
+pub(crate) fn unique_json(bytes: &[u8]) -> Result<Value, String> {
+    serde_json::from_slice::<UniqueJson>(bytes)
+        .map(|value| value.0)
+        .map_err(|error| format!("Invalid JSON: {error}"))
+}
+
+pub(crate) fn parse_json(text: &str, warnings: &mut Vec<String>) -> Result<Notebook, String> {
+    let value = unique_json(text.as_bytes())?;
     if value.get("schema_version").is_some() {
         return serde_json::from_value(value)
             .map_err(|error| format!("Invalid native backup schema: {error}"));

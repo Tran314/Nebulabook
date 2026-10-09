@@ -7,12 +7,12 @@
 ## 数据流
 
 1. 取得用户数据目录中的排他文件锁。
-2. 读取并验证版本化 Notebook JSON；错误阻止覆盖原文件。
+2. 读取 .nebula 认证封装，验证固定格式版本、完整性及内部 Notebook schema；错误阻止覆盖原文件。
 3. UI 编辑独立缓冲区，800ms 自动保存或手动保存。
 4. 将变更应用到 Notebook 副本，验证并持久化成功后才替换内存中的已保存状态。
 5. 切换笔记、导入或关闭窗口时先保存；失败保留缓冲区并显示错误。
 
-存储层负责同目录临时写入、同步和原子替换。恢复备份保存上一份成功快照，多实例文件锁避免两个程序各自覆盖对方。该机制不承诺对所有远程/异常文件系统的掉电安全；仍应做独立备份。
+存储层负责同目录临时写入、同步和原子替换；首次发布使用硬链接原子 create-new，不支持硬链接时明确报错。恢复备份保存上一份成功快照，多实例文件锁避免两个程序各自覆盖对方。该机制不承诺对所有远程/异常文件系统的掉电安全；仍应做独立备份。
 
 ## 迁移边界
 
@@ -32,4 +32,10 @@ Linux x64/ARM64在各自原生Ubuntu22.04 runner编译，要求glibc2.35+。不�
 
 ## 名称与持久化身份
 
-可见品牌 Nebulabook、Rust包/二进制 `nebulabook`、仓库 `Tran314/Nebulabook`。持久化身份仍为 `ProjectDirs::from("com", "Nebula", "Nebula Notepad")`，保留Linux `nebulanotepad`和Windows旧应用数据路径；不自动搬动或复制既有数据。旧浏览器 `NebulaLocalDB` 与 `nebula-legacy-indexeddb` 协议保持不变。
+可见品牌 Nebulabook、Rust包/二进制 `nebulabook`、仓库 `Tran314/Nebulabook`。持久化身份仍为 `ProjectDirs::from("com", "Nebula", "Nebula Notepad")`，保留Linux `nebulanotepad`和Windows旧应用数据路径；不搬动或覆盖旧源文件；在原目录无损迁移 notebook.json 到 notebook.nebula，保留迁移恢复快照。旧浏览器 `NebulaLocalDB` 与 `nebula-legacy-indexeddb` 协议保持不变。
+
+## .nebula 封装与迁移
+
+XChaCha20-Poly1305 使用公开的应用兼容密钥，24字节系统随机 nonce，44字节全部认证头，16字节 tag。这里只提供免密码的轻量混淆与完整性检查，不提供可靠保密或对抗源码持有者的篡改签名。精确布局和可复现 fixture 见 [NEBULA_FORMAT.md](NEBULA_FORMAT.md)。
+
+旧 JSON 原文及旧备份保留，迁移源 SHA-256 写入认证载荷。主文件存在时不回退到 JSON；旧源改写/降级写入会阻止打开与保存，旧源被用户迁走/删除则允许继续使用新库。锁仍是 notebook.json.lock。迁移先验证候选，生成独立 .migration.nebula，再原子创建主文件；中断后有备份即要求显式恢复。默认导出也是 .nebula；明文兼容导出是明确的独立操作。

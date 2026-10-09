@@ -13,6 +13,8 @@ Thumbs.db
 
 /release-assets/
 /smoke-output/
+/visual-output/
+/visual-evidence/
 
 __pycache__/
 *.pyc

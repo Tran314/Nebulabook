@@ -4,6 +4,8 @@ use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
 
 pub const SCHEMA_VERSION: u32 = 1;
+/// Bound record and relationship counts as well as serialized file size.
+pub const MAX_RECORDS: usize = 100_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,6 +126,33 @@ pub struct Tag {
 impl Notebook {
     /// Reject incompatible/corrupt snapshots before they can overwrite a good one.
     pub fn validate(&self) -> Result<(), String> {
+        let records = self
+            .notes
+            .len()
+            .saturating_add(self.folders.len())
+            .saturating_add(self.tags.len())
+            .saturating_add(self.legacy_settings.len())
+            .saturating_add(self.legacy_archives.len());
+        if records > MAX_RECORDS
+            || self
+                .notes
+                .iter()
+                .any(|note| note.tag_ids.len() > MAX_RECORDS)
+        {
+            return Err("笔记、文件夹、标签或保留元数据数量超过 100000 条安全上限。".into());
+        }
+        for value in self
+            .legacy_settings
+            .iter()
+            .chain(&self.legacy_archives)
+            .chain(
+                self.notes
+                    .iter()
+                    .filter_map(|note| note.legacy_metadata.as_ref()),
+            )
+        {
+            validate_metadata(value, 0)?;
+        }
         if self.schema_version != SCHEMA_VERSION {
             return Err(format!(
                 "不支持的数据版本 {}（当前支持 {}），请保留原文件并使用兼容版本打开。",
@@ -195,6 +224,32 @@ impl Notebook {
         }
         Ok(())
     }
+}
+
+fn validate_metadata(value: &serde_json::Value, depth: usize) -> Result<(), String> {
+    if depth > 64 {
+        return Err("保留元数据嵌套超过 64 层安全上限。".into());
+    }
+    match value {
+        serde_json::Value::Array(values) => {
+            if values.len() > MAX_RECORDS {
+                return Err("保留元数据数组超过 100000 条安全上限。".into());
+            }
+            for value in values {
+                validate_metadata(value, depth + 1)?;
+            }
+        }
+        serde_json::Value::Object(values) => {
+            if values.len() > MAX_RECORDS {
+                return Err("保留元数据对象超过 100000 字段安全上限。".into());
+            }
+            for value in values.values() {
+                validate_metadata(value, depth + 1)?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
 }
 
 fn unique_ids<'a>(
