@@ -80,8 +80,8 @@ fn old_json_and_backup_are_neither_read_nor_changed() {
 
 #[test]
 fn json_path_is_rejected_without_creating_native_files() {
-    let directory = tempfile::tempdir().unwrap();
     for extension in ["json", "JSON", "NEBULA", "txt"] {
+        let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join(format!("notebook.{extension}"));
         fs::write(&source, b"untouched").unwrap();
         assert!(matches!(
@@ -89,7 +89,9 @@ fn json_path_is_rejected_without_creating_native_files() {
             Err(StorageError::InvalidData { .. })
         ));
         assert_eq!(fs::read(&source).unwrap(), b"untouched");
-        assert!(!source.with_extension("nebula").exists());
+        // On case-insensitive filesystems, .NEBULA and .nebula name the same
+        // source. Verify no files were created, rather than probing an alias.
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
     }
 }
 
