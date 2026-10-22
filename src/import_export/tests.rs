@@ -104,6 +104,33 @@ fn html_is_nonexecuting_text_and_original_source_survives() {
 }
 
 #[test]
+fn html_table_spans_cannot_crash_import_or_change_existing_notes() {
+    for span in [
+        "rowspan=\"0\"".to_string(),
+        format!("colspan=\"{}\"", usize::MAX),
+    ] {
+        let source = format!("<table><tr><td {span}>Alpha</td><td>Beta</td></tr></table>");
+        let existing = native_note("existing");
+        let mut notebook = Notebook {
+            notes: vec![existing.clone()],
+            ..Notebook::default()
+        };
+        import_bytes(
+            "table.html",
+            source.as_bytes(),
+            &mut notebook,
+            ImportMode::Copy,
+        )
+        .unwrap();
+        assert_eq!(notebook.notes[0], existing);
+        let imported = &notebook.notes[1];
+        assert!(imported.content.contains("Alpha"));
+        assert!(imported.content.contains("Beta"));
+        assert_eq!(imported.original_html.as_deref(), Some(source.as_str()));
+    }
+}
+
+#[test]
 fn malformed_native_payloads_unknown_fields_and_future_schema_are_nondestructive() {
     let mut notebook = Notebook::default();
     notebook
