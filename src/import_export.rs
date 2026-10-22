@@ -245,7 +245,32 @@ fn html_to_text(html: &str) -> Result<String, String> {
     }
     // html2text uses an HTML parser, not a browser: no JavaScript, iframe,
     // network access, event handlers, or embedded content is executed.
-    html2text::from_read(html.as_bytes(), 120)
+    let config = html2text::config::plain();
+    let dom = config
+        .parse_html(html.as_bytes())
+        .map_err(|error| format!("Cannot convert HTML: {error}"))?;
+    let mut nodes = vec![dom.document.clone()];
+    while let Some(node) = nodes.pop() {
+        if let html2text::Element { name, attrs, .. } = &node.data {
+            if matches!(name.local.as_ref(), "td" | "th") {
+                for attr in attrs.borrow_mut().iter_mut() {
+                    let maximum = match attr.name.local.as_ref() {
+                        "colspan" => 1000,
+                        "rowspan" => 65534,
+                        _ => continue,
+                    };
+                    // Bound spans to HTML's limits. html2text also divides by
+                    // rowspan, so render its unsupported zero value as one row.
+                    let span = attr.value.parse::<u64>().unwrap_or(1).clamp(1, maximum);
+                    attr.value = span.to_string().into();
+                }
+            }
+        }
+        nodes.extend(node.children.borrow().iter().cloned());
+    }
+    config
+        .dom_to_render_tree(&dom)
+        .and_then(|tree| config.render_to_string(tree, 120))
         .map_err(|error| format!("Cannot convert HTML: {error}"))
 }
 
